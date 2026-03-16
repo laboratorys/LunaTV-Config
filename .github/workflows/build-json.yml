@@ -23,7 +23,7 @@ jobs:
           node-version: "20"
 
       - name: Process TS Files
-        run: node scripts/build-rules.js
+        run: node build-rules.js
 
       - name: Deploy to Dist
         run: |
