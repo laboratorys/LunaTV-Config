@@ -41,4 +41,8 @@ jobs:
       - name: Purge jsDelivr Cache
         if: steps.commit_step.outputs.changed == 'true'
         run: |
-          curl -i https://purge.jsdelivr.net/gh/${{ github.repository }}@main/dist/rules.json
+          BASE_URL="https://purge.jsdelivr.net/gh/${{ github.repository }}@main/dist"
+          echo "正在刷新 rules.json..."
+          curl -i "${BASE_URL}/rules.json"
+          echo -e "\n正在刷新 config.txt..."
+          curl -i "${BASE_URL}/config.txt"
