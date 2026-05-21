@@ -6,7 +6,7 @@ function processM3u8_ddttzy(blocks, baseUrl = "") {
     const headerLines = [];
     let hasFoundFirstTs = false;
 
-    blocks.forEach((block, index) => {
+    blocks.forEach((block) => {
         const blockSegments = [];
         let extinfBuffer = null;
 
@@ -41,22 +41,23 @@ function processM3u8_ddttzy(blocks, baseUrl = "") {
             }
         });
 
-        if (index === 0) {
-            validBlocks.push(blockSegments);
-            return;
-        }
+        if (blockSegments.length === 0) return;
 
         const totalDuration = blockSegments.reduce((sum, s) => sum + s.duration, 0);
-        const hasShortSegments = blockSegments.some(s => s.duration < 2.0);
-        const standardAdDurations = [5, 10, 15, 20, 30, 45, 60];
 
-        const isStandardAdTime = standardAdDurations.some(targetTime => {
-            return Math.abs(totalDuration - targetTime) <= 0.8;
+        let hasAdFeature = false;
+        blockSegments.forEach(s => {
+            const dStr = s.duration.toString();
+            if (dStr.includes('6666') || dStr.includes('3333') || s.duration < 2.0) {
+                hasAdFeature = true;
+            }
         });
 
         const isAd = blockSegments.length > 0 &&
             blockSegments.length < 15 &&
-            (isStandardAdTime || (totalDuration < 35 && hasShortSegments));
+            totalDuration > 10 &&
+            totalDuration < 35 &&
+            hasAdFeature;
 
         if (isAd) {
             blockSegments.forEach(s => extractedAdUrls.push(s.fullTs));
