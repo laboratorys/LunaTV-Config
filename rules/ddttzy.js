@@ -1,15 +1,13 @@
 function processM3u8_ddttzy(blocks, baseUrl = "") {
-    console.log("=== AD FILTER START ===");
-    console.log("外部传入的 blocks 总数:", blocks ? blocks.length : 0);
-
-    if (!blocks || blocks.length === 0) return { manifest: "", adUrls: [] };
+    if (!blocks || blocks.length === 0) return { manifest: "", adUrls: [], adNames: [] };
 
     const validBlocks = [];
     const extractedAdUrls = [];
+    const extractedAdNames = [];
     const headerLines = [];
     let hasFoundFirstTs = false;
 
-    blocks.forEach((block, index) => {
+    blocks.forEach((block) => {
         const blockSegments = [];
         let extinfBuffer = null;
 
@@ -44,48 +42,33 @@ function processM3u8_ddttzy(blocks, baseUrl = "") {
             }
         });
 
-        // 诊断日志 1: 检查 block 内是否有有效切片
-        if (blockSegments.length === 0) {
-            console.log(`[Block ${index}] 这是一个空块（不含有效TS切片），直接跳过评估`);
-            return;
-        }
+        if (blockSegments.length === 0) return;
 
         const totalDuration = blockSegments.reduce((sum, s) => sum + s.duration, 0);
 
-        let hasAdFeature = false;
-        blockSegments.forEach(s => {
-            const dStr = s.duration.toString();
-            if (dStr.includes('6666') || dStr.includes('3333') || s.duration < 2.0) {
-                hasAdFeature = true;
-            }
-        });
+        // 核心数学策略：计算当前 block 内部切片时长的方差（波动剧烈度）
+        const avgDuration = totalDuration / blockSegments.length;
+        const variance = blockSegments.reduce((sum, s) => sum + Math.pow(s.duration - avgDuration, 2), 0) / blockSegments.length;
 
-        // 诊断日志 2: 打印该块的所有特征值
-        console.log(`[Block ${index}] 正在评估: ` +
-            `切片数量=${blockSegments.length}, ` +
-            `总时长=${totalDuration.toFixed(2)}秒, ` +
-            `是否包含广告时间特征=${hasAdFeature}`);
+        // 核心行业策略：标准商业广告时长池（单位：秒），允许 1.2 秒转码及帧率工程误差
+        const standardAdDurations = [5, 10, 15, 20, 30, 45, 60];
+        const isStandardAdTime = standardAdDurations.some(targetTime => Math.abs(totalDuration - targetTime) <= 1.2);
 
-        // 判定条件拆解
-        const condCount = blockSegments.length > 0 && blockSegments.length < 15;
-        const condTime = totalDuration > 10 && totalDuration < 35;
+        // 复合过滤黄金防火墙（再短的正片，只要时长对不上商业广告档位，或者方差极其平稳，都会被当成正片安全放行）
+        const isAd = blockSegments.length > 0 &&
+            blockSegments.length < 15 &&
+            isStandardAdTime &&
+            (variance > 0.5 || blockSegments.some(s => s.duration < 2.0));
 
-        const isAd = condCount && condTime && hasAdFeature;
-
-        // 诊断日志 3: 打印判定结果及未命中的原因
         if (isAd) {
-            console.log(`❌ [Block ${index}] 判定成功：命中广告！正在切除...`);
-            blockSegments.forEach(s => extractedAdUrls.push(s.fullTs));
+            blockSegments.forEach(s => {
+                extractedAdUrls.push(s.fullTs);
+                extractedAdNames.push(s.ts);
+            });
             if (validBlocks.length > 0) {
                 validBlocks[validBlocks.length - 1].needInjectDiscontinuityAfter = true;
             }
         } else {
-            let reason = [];
-            if (!condCount) reason.push(`切片数(${blockSegments.length})不在 1~14 范围内`);
-            if (!condTime) reason.push(`总时长(${totalDuration.toFixed(2)}s)不在 10s~35s 范围内`);
-            if (!hasAdFeature) reason.push("未检测到 6666/3333 或小于2秒的碎切片特征");
-            console.log(`✅ [Block ${index}] 判定成功：认为是正片。未命中广告原因: [${reason.join(' | ')}]`);
-
             validBlocks.push(blockSegments);
         }
     });
@@ -118,9 +101,9 @@ function processM3u8_ddttzy(blocks, baseUrl = "") {
         output += "#EXT-X-ENDLIST\n";
     }
 
-    console.log("=== AD FILTER END ===");
     return {
         manifest: output,
-        adUrls: extractedAdUrls
+        adUrls: extractedAdUrls,
+        adNames: extractedAdNames
     };
 }
