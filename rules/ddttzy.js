@@ -30,9 +30,9 @@ function processM3u8_dyttzy(blocks, baseUrl) {
 
         const isAd = i !== 0 &&
             count > 0 &&
-            count < 15 &&
+            count < 10 &&
             totalDuration >= 10 &&
-            totalDuration <= 45 &&
+            totalDuration <= 22 &&
             (variance > 0.5 || hasShortSegments);
 
         if (!isAd) {
