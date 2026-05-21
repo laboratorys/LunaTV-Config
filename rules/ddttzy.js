@@ -1,4 +1,7 @@
 function processM3u8_ddttzy(blocks, baseUrl = "") {
+    console.log("=== AD FILTER START ===");
+    console.log("外部传入的 blocks 总数:", blocks ? blocks.length : 0);
+
     if (!blocks || blocks.length === 0) return { manifest: "", adUrls: [] };
 
     const validBlocks = [];
@@ -6,7 +9,7 @@ function processM3u8_ddttzy(blocks, baseUrl = "") {
     const headerLines = [];
     let hasFoundFirstTs = false;
 
-    blocks.forEach((block) => {
+    blocks.forEach((block, index) => {
         const blockSegments = [];
         let extinfBuffer = null;
 
@@ -41,7 +44,11 @@ function processM3u8_ddttzy(blocks, baseUrl = "") {
             }
         });
 
-        if (blockSegments.length === 0) return;
+        // 诊断日志 1: 检查 block 内是否有有效切片
+        if (blockSegments.length === 0) {
+            console.log(`[Block ${index}] 这是一个空块（不含有效TS切片），直接跳过评估`);
+            return;
+        }
 
         const totalDuration = blockSegments.reduce((sum, s) => sum + s.duration, 0);
 
@@ -53,18 +60,32 @@ function processM3u8_ddttzy(blocks, baseUrl = "") {
             }
         });
 
-        const isAd = blockSegments.length > 0 &&
-            blockSegments.length < 15 &&
-            totalDuration > 10 &&
-            totalDuration < 35 &&
-            hasAdFeature;
+        // 诊断日志 2: 打印该块的所有特征值
+        console.log(`[Block ${index}] 正在评估: ` +
+            `切片数量=${blockSegments.length}, ` +
+            `总时长=${totalDuration.toFixed(2)}秒, ` +
+            `是否包含广告时间特征=${hasAdFeature}`);
 
+        // 判定条件拆解
+        const condCount = blockSegments.length > 0 && blockSegments.length < 15;
+        const condTime = totalDuration > 10 && totalDuration < 35;
+
+        const isAd = condCount && condTime && hasAdFeature;
+
+        // 诊断日志 3: 打印判定结果及未命中的原因
         if (isAd) {
+            console.log(`❌ [Block ${index}] 判定成功：命中广告！正在切除...`);
             blockSegments.forEach(s => extractedAdUrls.push(s.fullTs));
             if (validBlocks.length > 0) {
                 validBlocks[validBlocks.length - 1].needInjectDiscontinuityAfter = true;
             }
         } else {
+            let reason = [];
+            if (!condCount) reason.push(`切片数(${blockSegments.length})不在 1~14 范围内`);
+            if (!condTime) reason.push(`总时长(${totalDuration.toFixed(2)}s)不在 10s~35s 范围内`);
+            if (!hasAdFeature) reason.push("未检测到 6666/3333 或小于2秒的碎切片特征");
+            console.log(`✅ [Block ${index}] 判定成功：认为是正片。未命中广告原因: [${reason.join(' | ')}]`);
+
             validBlocks.push(blockSegments);
         }
     });
@@ -97,6 +118,7 @@ function processM3u8_ddttzy(blocks, baseUrl = "") {
         output += "#EXT-X-ENDLIST\n";
     }
 
+    console.log("=== AD FILTER END ===");
     return {
         manifest: output,
         adUrls: extractedAdUrls
