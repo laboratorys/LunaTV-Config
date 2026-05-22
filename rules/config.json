@@ -1,6 +1,6 @@
 {
   "mapping": {
-    "ffzy": "common_filter.js",
+    "ffzy": "processM3u8_ffzy.js",
     "zy360": "common_filter.js",
     "bfzy": "common_filter.js",
     "lzi": "lzi.js",
