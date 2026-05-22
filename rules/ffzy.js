@@ -19,37 +19,32 @@ function processM3u8_ffzy(blocks, baseUrl) {
                 totalDuration += duration;
                 adLines.push(line);
             } else if (!line.startsWith("#")) {
-                // TS 文件地址
                 const url = line.startsWith("http") ? line : new URL(line, baseUrl).href;
-                tsSegments.push({ url, duration: 0 }); // duration 已在上一步计算
+                tsSegments.push({ url });
                 adLines.push(url);
             } else {
-                // 其他 # 开头的标签
                 adLines.push(line);
             }
         }
 
         const count = tsSegments.length;
 
-        // 2. 核心特征判定 (物理属性)
-        // 特征：15-22秒，且片段数为 4-10 个
-        const isAd = (totalDuration >= 15 && totalDuration <= 22) && (count >= 4 && count <= 10);
+        // 2. 更加严格的广告判定（17-20s 且片段 4-10）
+        const isAd = (totalDuration >= 17 && totalDuration <= 20) && (count >= 4 && count <= 10);
 
-        // 极短块防御 (防止广告被切成更细小的单位)
-        const isTooShort = (totalDuration > 0 && totalDuration < 10);
+        // 3. 正片保护：如果当前块是首块或末尾块，或者时长过长，强制不拦截
+        // 很多正片的切片被 `#EXT-X-DISCONTINUITY` 强行切断，导致局部时长只有 17-20s
+        const isProtected = (i === 0 || i === blocks.length - 1) || (totalDuration > 22 || count > 10);
 
-        // 3. 结果处理
-        if (isAd || isTooShort) {
-            console.warn(`[拦截广告] 块 ${i}: 时长 ${totalDuration.toFixed(2)}s, 个数 ${count} -> 已拦截`);
-
+        if (isAd && !isProtected) {
+            console.warn(`[拦截广告] 块 ${i}: 时长 ${totalDuration.toFixed(2)}s, 个数 ${count}`);
             if (ads.length > 0) ads.push("#EXT-X-DISCONTINUITY");
             ads.push(...adLines);
         } else {
-            console.log(`[放行正常] 块 ${i}: 时长 ${totalDuration.toFixed(2)}s, 个数 ${count}`);
+            // 正常块
             valid.push(block);
         }
     });
 
-    console.log(`[广告过滤] 完成。有效块: ${valid.length}, 拦截片段块: ${ads.length > 0 ? '有' : '无'}`);
     return { validBlocks: valid, adSegments: ads };
 }
