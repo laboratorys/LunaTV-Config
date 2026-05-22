@@ -2,46 +2,39 @@ function processM3u8_ffzy(blocks, baseUrl) {
     const valid = [];
     const ads = [];
 
-    console.log(`[广告过滤] 开始处理，共 ${blocks.length} 个块`);
+    // 统计一下所有块的时长分布，找出“主流”正片块的时长区间
+    const allDurations = blocks.map(b =>
+        b.filter(l => l.startsWith("#EXTINF:")).reduce((sum, l) => sum + parseFloat(l.split(':')[1]), 0)
+    );
+
+    // 假设广告的特征是“特立独行”：时长与主流正片块差异巨大
+    // 我们可以取平均值或者中位数来作为参考
+    const avgDuration = allDurations.reduce((a, b) => a + b, 0) / allDurations.length;
 
     blocks.forEach((block, i) => {
-        const tsSegments = [];
-        const adLines = [];
         let totalDuration = 0;
+        let count = 0;
 
-        // 1. 基础解析
-        for (let idx = 0; idx < block.length; idx++) {
-            const line = block[idx].trim();
-            if (!line) continue;
-
+        block.forEach(line => {
             if (line.startsWith("#EXTINF:")) {
-                const duration = parseFloat(line.split(':')[1]);
-                totalDuration += duration;
-                adLines.push(line);
-            } else if (!line.startsWith("#")) {
-                const url = line.startsWith("http") ? line : new URL(line, baseUrl).href;
-                tsSegments.push({ url });
-                adLines.push(url);
-            } else {
-                adLines.push(line);
+                totalDuration += parseFloat(line.split(':')[1]);
+                count++;
             }
-        }
+        });
 
-        const count = tsSegments.length;
+        // 核心判定：
+        // 1. 时长确实在 15-22s (你观察到的广告固定范围)
+        // 2. 且该块的时长明显小于“正片块”的平均时长 (比如小于平均值的 60%)
+        // 3. 排除首尾块
+        const isAd = (totalDuration >= 15 && totalDuration <= 22) &&
+            (totalDuration < avgDuration * 0.6) &&
+            (i > 0 && i < blocks.length - 1);
 
-        // 2. 更加严格的广告判定（17-20s 且片段 4-10）
-        const isAd = (totalDuration >= 17 && totalDuration <= 20) && (count >= 4 && count <= 10);
-
-        // 3. 正片保护：如果当前块是首块或末尾块，或者时长过长，强制不拦截
-        // 很多正片的切片被 `#EXT-X-DISCONTINUITY` 强行切断，导致局部时长只有 17-20s
-        const isProtected = (i === 0 || i === blocks.length - 1) || (totalDuration > 22 || count > 10);
-
-        if (isAd && !isProtected) {
-            console.warn(`[拦截广告] 块 ${i}: 时长 ${totalDuration.toFixed(2)}s, 个数 ${count}`);
+        if (isAd) {
+            console.warn(`[精准拦截] 块 ${i}: 时长 ${totalDuration.toFixed(2)}s, 平均时长 ${avgDuration.toFixed(2)}`);
             if (ads.length > 0) ads.push("#EXT-X-DISCONTINUITY");
-            ads.push(...adLines);
+            ads.push(...block);
         } else {
-            // 正常块
             valid.push(block);
         }
     });
