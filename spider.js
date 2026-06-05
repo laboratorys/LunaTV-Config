@@ -55,7 +55,6 @@ function httpRequest(url, options = {}, postData = null) {
                     status: res.statusCode,
                     headers: res.headers,
                     text: () => Promise.resolve(buffer.toString("utf-8")),
-                    json: () => Promise.resolve(JSON.parse(buffer.toString("utf-8"))),
                     arrayBuffer: () => Promise.resolve(buffer),
                 });
             });
@@ -97,7 +96,8 @@ async function calculateFastMd5(tsUrl) {
 }
 
 /**
- * 🎯 逻辑点 1：递归拆解多码率并提取区段
+ * 🎯 递归拆解多码率并提取区段
+ * 返回按 #EXT-X-DISCONTINUITY 切分的区段数组
  */
 async function fetchAndParseSegments(m3u8Url, depth = 0) {
     if (depth > 4) return { segments: [], totalTsCount: 0 };
@@ -113,32 +113,39 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
 
         let segments = [];
         let currentSegment = [];
-        let nestedM3u8Url = "";
         let totalTsCount = 0;
-        let hasStreamInf = m3u8Text.includes("#EXT-X-STREAM-INF");
+        let hasStreamInf = false;
+        let nestedM3u8Urls = [];
 
         for (let line of lines) {
             line = line.trim().replace(/[\x00-\x1F]/g, "");
             if (!line) continue;
 
             if (line.startsWith("#")) {
-                // 根据不连续标记分割区段
-                if (line.startsWith("#EXT-X-DISCONTINUITY")) {
+                if (line.startsWith("#EXT-X-STREAM-INF")) {
+                    hasStreamInf = true;
+                } else if (line.startsWith("#EXT-X-DISCONTINUITY")) {
                     if (currentSegment.length > 0) {
                         segments.push(currentSegment);
                         currentSegment = [];
                     }
-                } else if (line.includes(".m3u8") && !line.startsWith("#EXT-X-STREAM-INF")) {
-                    const match = line.match(/https?:\/\/[^\s"'`>]+/);
-                    if (match) nestedM3u8Url = match[0];
                 }
                 continue;
             }
+
+            // 非注释行
             if (line.includes(".m3u8")) {
-                nestedM3u8Url = line;
-                break;
-            }
-            if (line.includes(".ts") || line.includes(".png") || line.includes(".jpg") || line.includes(".jpeg") || line.includes(".image")) {
+                // 收集所有嵌套 m3u8，优先选择包含 index.m3u8 的（通常是最高质量或默认）
+                let cleanUrl = line;
+                if (!cleanUrl.startsWith("http")) {
+                    if (cleanUrl.startsWith("/")) {
+                        cleanUrl = new URL(m3u8Url).origin + cleanUrl;
+                    } else {
+                        cleanUrl = baseUrl + cleanUrl;
+                    }
+                }
+                nestedM3u8Urls.push(cleanUrl);
+            } else if (line.includes(".ts") || line.includes(".png") || line.includes(".jpg") || line.includes(".jpeg") || line.includes(".image")) {
                 let fullTsUrl = line.startsWith("http") ? line : (line.startsWith("/") ? new URL(m3u8Url).origin + line : baseUrl + line);
                 currentSegment.push({ filename: line, url: fullTsUrl });
                 totalTsCount++;
@@ -149,20 +156,12 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
             segments.push(currentSegment);
         }
 
-        // 检测到多码率特征，进行优雅下钻
-        if (nestedM3u8Url && (totalTsCount === 0 || hasStreamInf || segments.length === 0)) {
-            let cleanNestedUrl = nestedM3u8Url.trim().replace(/[\x00-\x1F]/g, "");
-            let finalNestedUrl = "";
-            if (cleanNestedUrl.startsWith("http")) {
-                finalNestedUrl = cleanNestedUrl;
-            } else if (cleanNestedUrl.startsWith("/")) {
-                finalNestedUrl = new URL(m3u8Url).origin + "/" + cleanNestedUrl.replace(/^\/+/, "");
-            } else {
-                finalNestedUrl = baseUrl + cleanNestedUrl;
-            }
-
-            console.log(`      ➔ [M3U8 重定向] 下钻至: ${finalNestedUrl}`);
-            return await fetchAndParseSegments(finalNestedUrl, depth + 1);
+        // 检测到多码率特征，需要下钻
+        if (nestedM3u8Urls.length > 0 && (totalTsCount === 0 || hasStreamInf || segments.length === 0)) {
+            // 优先选择 index.m3u8，没有则选第一个
+            let targetNestedUrl = nestedM3u8Urls.find(u => u.includes("index.m3u8")) || nestedM3u8Urls[0];
+            console.log(`      ➔ [M3U8 重定向] 下钻至: ${targetNestedUrl}`);
+            return await fetchAndParseSegments(targetNestedUrl, depth + 1);
         }
 
         return { segments, totalTsCount };
@@ -196,7 +195,7 @@ async function start() {
         console.log(`[同步开启] 开始扫描采集站: ${sourceName} (${sourceKey})`);
         console.log(`[目标接口]: ${baseApiUrl}`);
 
-        // 🚨 逻辑点 4：每个源拥有自己独立的内存缓存池，解析新源时完全隔离
+        // 每个源独立的内存缓存池：MD5 -> 来源标识（vodId 或 "CLOUD_KNOWN_AD"）
         const sourceCacheMap = new Map();
 
         // 预载云端既有规则作为引信
@@ -219,16 +218,12 @@ async function start() {
             const apiData = await apiResponse.json();
             if (!apiData.list || apiData.list.length === 0) continue;
 
-            // ⚡ 串行精确获取前 20 部影片
             const sliceLimit = 20;
             const actualCount = apiData.list.length > sliceLimit ? sliceLimit : apiData.list.length;
             console.log(`  📊 [数据就绪] 采集站实际返回 ${apiData.list.length} 条，硬截取前 ${actualCount} 部影片开启串行流水线洗涤...`);
 
             const adSegmentsToSubmit = [];
 
-            // =================================================================
-            // 🚀 核心逻辑改造：串行处理影片，在生命周期内动态完成自交与跨片大碰撞
-            // =================================================================
             for (const vod of apiData.list.slice(0, sliceLimit)) {
                 const vodId = String(vod.vod_id).trim().replace(/\.0$/, "");
                 const playUrlStr = vod.vod_play_url;
@@ -247,7 +242,7 @@ async function start() {
                 const { segments, totalTsCount } = await fetchAndParseSegments(m3u8Url.trim());
                 if (!segments || segments.length === 0 || totalTsCount === 0) continue;
 
-                // 🚨 逻辑点 2：如果区段数量小于 2 个（说明没有 #EXT-X-DISCONTINUITY 分隔符），直接认为整流无广告，秒级熔断跳过！
+                // 🚨 逻辑点：如果区段数量小于 2，直接认为整流无广告，秒级熔断跳过
                 if (segments.length < 2) {
                     console.log(`       ℹ️ [前置安全放行] 隔离区段数为 ${segments.length}，证明未被插播切刀，判定全片纯净。`);
                     continue;
@@ -256,48 +251,94 @@ async function start() {
                 console.log(`       📦 拓扑分析: 发现 ${segments.length} 个隔离区段，全流共计 ${totalTsCount} 个切片`);
 
                 let localVodAdCount = 0;
-                // 用来统计当前影片内部，各个区段首片 MD5 出现的频率，以此用来判定自交
-                const internalMd5Counts = {};
-                // 用来建立当前片内 🌟 首片MD5 -> 区段索引数组 🌟 的对齐射击卡
-                const internalMd5ToSegIndices = {};
 
-                // 第一步：预加载符合大小限制（<=20）的候选广告段的首片 MD5
+                // ============================================================
+                // 第一步：为每个区段计算首尾 TS 的 fast-md5
+                // ============================================================
+                const segmentFingerprints = []; // { index, firstMd5, lastMd5, length, segment }
+
                 for (let i = 0; i < segments.length; i++) {
                     const seg = segments[i];
-                    if (seg.length > 0 && seg.length <= AD_SEGMENT_MAX_COUNT) {
-                        const firstTsUrl = seg[0].url;
-                        const firstMd5 = await calculateFastMd5(firstTsUrl);
-                        if (firstMd5) {
-                            seg[0].fastMd5 = firstMd5;
-                            internalMd5Counts[firstMd5] = (internalMd5Counts[firstMd5] || 0) + 1;
-                            if (!internalMd5ToSegIndices[firstMd5]) {
-                                internalMd5ToSegIndices[firstMd5] = [];
-                            }
-                            internalMd5ToSegIndices[firstMd5].push(i);
+
+                    // 严格执行：如果切片数量超过 20，直接作为排除依据，不判定为广告
+                    if (seg.length === 0 || seg.length > AD_SEGMENT_MAX_COUNT) continue;
+
+                    const firstTsUrl = seg[0].url;
+                    const lastTsUrl = seg[seg.length - 1].url;
+
+                    const [firstMd5, lastMd5] = await Promise.all([
+                        calculateFastMd5(firstTsUrl),
+                        calculateFastMd5(lastTsUrl)
+                    ]);
+
+                    if (firstMd5) seg[0].fastMd5 = firstMd5;
+                    if (lastMd5) seg[seg.length - 1].fastMd5 = lastMd5;
+
+                    segmentFingerprints.push({
+                        index: i,
+                        firstMd5,
+                        lastMd5,
+                        length: seg.length,
+                        segment: seg
+                    });
+                }
+
+                // ============================================================
+                // 第二步：片内自交检测
+                // 统计所有区段的首尾 MD5 出现频率，如果有重复，则对应区段是广告
+                // ============================================================
+                const md5Frequency = {}; // md5 -> 出现次数
+                const md5ToSegments = {}; // md5 -> [segmentIndex]
+
+                for (const fp of segmentFingerprints) {
+                    // 首 MD5
+                    if (fp.firstMd5) {
+                        md5Frequency[fp.firstMd5] = (md5Frequency[fp.firstMd5] || 0) + 1;
+                        if (!md5ToSegments[fp.firstMd5]) md5ToSegments[fp.firstMd5] = [];
+                        md5ToSegments[fp.firstMd5].push(fp.index);
+                    }
+                    // 尾 MD5
+                    if (fp.lastMd5) {
+                        md5Frequency[fp.lastMd5] = (md5Frequency[fp.lastMd5] || 0) + 1;
+                        if (!md5ToSegments[fp.lastMd5]) md5ToSegments[fp.lastMd5] = [];
+                        md5ToSegments[fp.lastMd5].push(fp.index);
+                    }
+                }
+
+                // 找出所有涉及重复 MD5 的区段索引
+                const selfIntersectAdIndices = new Set();
+                for (const [md5, count] of Object.entries(md5Frequency)) {
+                    if (count >= 2) {
+                        // 这个 MD5 在多个区段的首尾出现了，所有涉及的区段都是广告
+                        for (const segIdx of md5ToSegments[md5]) {
+                            selfIntersectAdIndices.add(segIdx);
                         }
                     }
                 }
 
-                // 第二步：回溯区段，开始定性收网
-                for (let i = 0; i < segments.length; i++) {
-                    const currentSeg = segments[i];
-                    // 严格执行你的需求：如果切片数量超过了 20，直接作为排除依据，不判定为广告
-                    if (currentSeg.length === 0 || currentSeg.length > AD_SEGMENT_MAX_COUNT) continue;
-
-                    const firstMd5 = currentSeg[0]?.fastMd5;
-                    if (!firstMd5) continue;
+                // ============================================================
+                // 第三步：回溯区段，开始定性收网
+                // ============================================================
+                for (const fp of segmentFingerprints) {
+                    const i = fp.index;
+                    const currentSeg = fp.segment;
+                    const firstMd5 = fp.firstMd5;
+                    const lastMd5 = fp.lastMd5;
 
                     let isAdSegment = false;
                     let hitReason = "";
 
-                    // 🚨 逻辑点 3：片内不连续段间自交检测。如果本片内多个插播位首片指纹重复出现，直接坐实广告
-                    if (internalMd5Counts[firstMd5] >= 2) {
+                    // 🚨 逻辑点 3：片内自交检测
+                    // 如果该区段的首或尾 MD5 在本片内其他区段也出现过，则坐实广告
+                    if (selfIntersectAdIndices.has(i)) {
                         isAdSegment = true;
-                        hitReason = `片内多个不同位置插播了相同广告段（自交成功）`;
+                        hitReason = `片内多个不同位置插播了相同广告段（首尾自交成功）`;
                     }
-                    // 🚨 逻辑点 4：如果自交未触发，去撞单源独立状态池。撞上即代表跨片大撞衫，直接定性广告
-                    else if (sourceCacheMap.has(firstMd5)) {
-                        const mappedValue = sourceCacheMap.get(firstMd5);
+                        // 🚨 逻辑点 4：跨影片撞衫检测
+                    // 如果自交未触发，检查首尾 MD5 是否在缓存池中
+                    else if ((firstMd5 && sourceCacheMap.has(firstMd5)) || (lastMd5 && sourceCacheMap.has(lastMd5))) {
+                        let matchedMd5 = firstMd5 && sourceCacheMap.has(firstMd5) ? firstMd5 : lastMd5;
+                        let mappedValue = sourceCacheMap.get(matchedMd5);
                         if (mappedValue === "CLOUD_KNOWN_AD") {
                             isAdSegment = true;
                             hitReason = `直接命中云端既有历史广告库特征`;
@@ -307,13 +348,12 @@ async function start() {
                         }
                     }
 
-                    // 🎯 判定成功，开始收敛、高亮日志并包圆整段 ts
+                    // 🎯 判定成功，收敛并打包整段 ts
                     if (isAdSegment) {
                         localVodAdCount += currentSeg.length;
-                        console.log(`      🔥 [确认广告] 区段 [序号:${i+1}] (共 ${currentSeg.length} 片) -> 原因: ${hitReason}`);
+                        console.log(`      🔥 [确认广告] 区段 [序号:${i + 1}] (共 ${currentSeg.length} 片) -> 原因: ${hitReason}`);
 
                         for (const tsItem of currentSeg) {
-                            // 补齐该广告段内所有 ts 文件的 MD5 特征
                             if (!tsItem.fastMd5) tsItem.fastMd5 = await calculateFastMd5(tsItem.url);
                             if (tsItem.fastMd5) {
                                 adSegmentsToSubmit.push({
@@ -324,8 +364,10 @@ async function start() {
                             }
                         }
                     } else {
-                        // 🚨 逻辑点 4 承接：如果没有被断定为广告，则把当前分段的首片 ts 沉淀至池子，给下一部电影做撞衫对比引信
-                        sourceCacheMap.set(firstMd5, vodId);
+                        // 🚨 逻辑点 4 承接：未被断定为广告，将首尾 MD5 沉淀至缓存池
+                        // 给下一部电影做撞衫对比引信
+                        if (firstMd5) sourceCacheMap.set(firstMd5, vodId);
+                        if (lastMd5) sourceCacheMap.set(lastMd5, vodId);
                     }
                 }
 
