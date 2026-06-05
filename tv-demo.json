@@ -29,9 +29,9 @@
       "api": "https://api.yyzy-tv.vip/inc/apijson.php",
       "name": "优质资源"
     },
-    "ikzy": {
-      "api": "https://ikunzyapi.com/api.php/provide/vod",
-      "name": "ikun资源"
+    "myzy": {
+      "api": "https://api.maoyanapi.top/api.php/provide/vod",
+      "name": "猫眼资源"
     }
   },
   "lives": {

@@ -1,0 +1,31 @@
+name: LunaTV AD Rules Spider
+
+on:
+  schedule:
+    # 每天北京时间凌晨 03:00 和 中午 12:00 自动跑一次清洗
+    - cron: '0 19,4 * * *'
+  workflow_dispatch: # 支持你在 GitHub 面板上手动点按钮触发测试
+
+jobs:
+  run-crawler:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install Dependencies
+        run: |
+          # 纯原生 fetch，无多余第三方包依赖
+
+      - name: Execute Ad Spider Engine
+        env:
+          # 填入你的 Cloudflare Workers 分配的自定义域名或 .workers.dev 域名
+          WORKER_BASE_URL: ${{ secrets.WORKER_BASE_URL }}+
+          SPIDER_SECRET: ${{ secrets.SPIDER_SECRET }}
+        run: node spider.js
