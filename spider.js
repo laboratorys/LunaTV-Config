@@ -95,6 +95,7 @@ async function calculateFastMd5(tsUrl) {
     }
 }
 
+// 🎯 高精深度拆解、无条件重定向下钻核心模块
 async function fetchAndParseSegments(m3u8Url, depth = 0) {
     if (depth > 4) {
         return { segments: [], totalTsCount: 0 };
@@ -105,7 +106,7 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
         let m3u8Text = await response.text();
         if (!m3u8Text) return { segments: [], totalTsCount: 0 };
 
-        // 🚨 黄金洗涤 1：强制格式化 CRLF 换行符
+        // 🚨 黄金洗涤 1：强行格式化并洗净 CRLF 换行符
         m3u8Text = m3u8Text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
         const lines = m3u8Text.split("\n");
@@ -117,7 +118,7 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
         let totalTsCount = 0;
 
         for (let line of lines) {
-            // 🚨 黄金洗涤 2：拦截单行控制字符与尾巴
+            // 🚨 黄金洗涤 2：拦截并粉碎单行中隐蔽的不可见控制字符与尾巴
             line = line.trim().replace(/[\x00-\x1F]/g, "");
             if (!line) continue;
 
@@ -148,16 +149,15 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
             segments.push(currentSegment);
         }
 
-        // 🚨 黄金洗涤 3：检测下钻重定向
+        // 🚨 黄金洗涤 3：无视垃圾外壳，侦测到嵌套强行无条件进行重定向深度下钻
         if (nestedM3u8Url && (segments.length === 0 || m3u8Text.includes("#EXT-X-STREAM-INF") || segments[0].length === 0)) {
             let cleanNestedUrl = nestedM3u8Url.trim().replace(/[\x00-\x1F]/g, "");
 
-            // 防御非标准相对路径拼出的双斜杠 (比如豆瓣资源 /20260602//20260602...)
+            // 🔒 防御性路径拼接：阻断非标准多速率路径引发的双斜杠或根断连灾难
             let finalNestedUrl = "";
             if (cleanNestedUrl.startsWith("http")) {
                 finalNestedUrl = cleanNestedUrl;
             } else if (cleanNestedUrl.startsWith("/")) {
-                // 如果是绝对根路径，或者防止 baseUrl 本身带斜尾巴
                 const origin = new URL(m3u8Url).origin;
                 finalNestedUrl = origin + "/" + cleanNestedUrl.replace(/^\/+/, "");
             } else {
@@ -165,12 +165,12 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
             }
 
             console.log(`      ➔ [M3U8 重定向] 下钻至: ${finalNestedUrl}`);
-            return await fetchAndParseSegments(finalNestedUrl, depth + 1);
+            return await fetchAndParseSegments(finalNestedUrl, depth + 1); // 递归下钻
         }
 
         return { segments, totalTsCount };
     } catch (e) {
-        // 🚨 核心修复：捕获块出口必须完全契合解构预期，杜绝 undefined.length 灾难
+        // 🔒 出口格式强一致保证，绝不向最外层抛出 undefined 导致死锁崩溃
         return { segments: [], totalTsCount: 0 };
     }
 }
@@ -231,7 +231,7 @@ async function start() {
             const apiData = await apiResponse.json();
             if (!apiData.list || apiData.list.length === 0) continue;
 
-            const sliceLimit = 5; // 限制解析前 5 条影片
+            const sliceLimit = 5; // 硬截取前 5 条影片进行深度探测
             const actualCount = apiData.list.length > sliceLimit ? sliceLimit : apiData.list.length;
             console.log(`  📊 [数据就绪] 采集站实际返回 ${apiData.list.length} 条，硬截取前 ${actualCount} 部影片进入深度拆解 M3U8...`);
 
@@ -259,6 +259,7 @@ async function start() {
 
                 console.log(`       🔗 探测到真实 M3U8: ${m3u8Url.trim()}`);
 
+                // 解构调用，安全承接底层标准防御结构
                 const { segments, totalTsCount } = await fetchAndParseSegments(m3u8Url.trim());
                 if (!segments || segments.length === 0) {
                     continue;
@@ -266,7 +267,7 @@ async function start() {
 
                 console.log(`       📦 拓扑分析: 发现 ${segments.length} 个隔离区段，全流共计 ${totalTsCount} 个切片`);
 
-                // 异步截取并抓取特征
+                // 抓取特征
                 for (let i = 0; i < segments.length; i++) {
                     const seg = segments[i];
                     if (seg.length > 0 && seg.length <= AD_SEGMENT_MAX_COUNT) {
@@ -278,7 +279,7 @@ async function start() {
             }
 
             // ==========================================
-            // 阶段二：指纹批量网状化沉淀
+            // 阶段二：指纹批量网状化沉淀至内存共享池
             // ==========================================
             parsedVodList.forEach(item => {
                 item.segments.forEach(seg => {
@@ -290,7 +291,7 @@ async function start() {
             });
 
             // ==========================================
-            // 阶段三：回溯交叉碰撞与广告最终定性
+            // 阶段三：回溯交叉大碰撞（自交 + 跨片网状碰撞）
             // ==========================================
             for (const item of parsedVodList) {
                 const { vodId, segments } = item;
