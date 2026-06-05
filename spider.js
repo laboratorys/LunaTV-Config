@@ -9,7 +9,7 @@ const BROWSER_HEADERS = {
 const AD_SEGMENT_MAX_COUNT = 20;
 
 const WORKER_BASE_URL = process.env.WORKER_BASE_URL;
-const SPIDER_SECRET = process.env.SPIDER_SECRET || "";
+const SPIDER_TOKEN = process.env.SPIDER_TOKEN || "";
 
 if (!WORKER_BASE_URL) {
     console.error("Missing WORKER_BASE_URL environment variable.");
@@ -211,12 +211,8 @@ async function start() {
             // 提交确定好的广告切片
             if (adSegmentsToSubmit.length > 0) {
                 console.log(`  🚀 [同步上传] 推送 ${adSegmentsToSubmit.length} 条真实广告特征至 D1...`);
-                await fetch(`${WORKER_BASE_URL}/api/submit-ad-segments`, {
+                await fetch(`${WORKER_BASE_URL}/api/submit-ad-segments?token=${SPIDER_TOKEN}`, {
                     method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Authorization": `Bearer ${SPIDER_SECRET}`
-                    },
                     body: JSON.stringify({
                         source_key: sourceKey,
                         source_name: sourceName,
