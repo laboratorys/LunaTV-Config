@@ -193,7 +193,7 @@ async function start() {
 
             const adSegmentsToSubmit = [];
 
-            for (const vod of apiData.list.slice(0, 10)) {
+            for (const vod of apiData.list.slice(0, 20)) {
                 const vodId = String(vod.vod_id).trim().replace(/\.0$/, "");
                 const playUrlStr = vod.vod_play_url;
                 if (!playUrlStr || !vodId) continue;
