@@ -97,12 +97,16 @@ async function calculateFastMd5(tsUrl) {
 }
 
 async function fetchAndParseSegments(m3u8Url, depth = 0) {
-    if (depth > 3) return [];
+    if (depth > 4) return []; // 稍微加深层级容错
     try {
+        // 使用我们之前改好的万无一失的 httpRequest
         const response = await httpRequest(m3u8Url, { timeout: 6000 });
         if (!response.ok) return [];
+
         const m3u8Text = await response.text();
-        const lines = m3u8Text.split("\n");
+        if (!m3u8Text || typeof m3u8Text !== "string") return [];
+
+        const lines = m3u8Text.split(/\r?\n/); // 兼容 Windows 和 Linux 换行符
         const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf("/") + 1);
 
         let segments = [];
@@ -112,24 +116,57 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
         for (let line of lines) {
             line = line.trim();
             if (!line) continue;
+
             if (line.startsWith("#")) {
+                // 精准匹配不连续度标记
                 if (line.startsWith("#EXT-X-DISCONTINUITY")) {
-                    if (currentSegment.length > 0) { segments.push(currentSegment); currentSegment = []; }
+                    if (currentSegment.length > 0) {
+                        segments.push(currentSegment);
+                        currentSegment = [];
+                    }
                 } else if (line.includes(".m3u8") && !line.startsWith("#EXT-X-STREAM-INF")) {
+                    // 尝试提取行内的潜藏 m3u8 链接
                     const match = line.match(/https?:\/\/[^\s"]+/);
                     if (match) nestedM3u8Url = match[0];
                 }
                 continue;
             }
-            if (line.includes(".m3u8")) { nestedM3u8Url = line; break; }
-            if (line.includes(".ts") || line.includes(".png") || line.includes(".jpg") || line.includes(".jpeg")) {
-                let fullTsUrl = line.startsWith("http") ? line : (line.startsWith("/") ? new URL(m3u8Url).origin + line : baseUrl + line);
+
+            // 发现下一级嵌套
+            if (line.includes(".m3u8")) {
+                nestedM3u8Url = line;
+                break;
+            }
+
+            // 匹配切片
+            if (line.includes(".ts") || line.includes(".png") || line.includes(".jpg") || line.includes(".jpeg") || line.includes(".image")) {
+                let fullTsUrl = line.startsWith("http")
+                    ? line
+                    : (line.startsWith("/") ? new URL(m3u8Url).origin + line : baseUrl + line);
                 currentSegment.push({ filename: line, url: fullTsUrl });
             }
         }
-        if (currentSegment.length > 0) segments.push(currentSegment);
-        return (nestedM3u8Url && segments.length === 0) ? await fetchAndParseSegments(nestedM3u8Url.startsWith("http") ? nestedM3u8Url : baseUrl + nestedM3u8Url, depth + 1) : segments;
-    } catch { return []; }
+
+        if (currentSegment.length > 0) {
+            segments.push(currentSegment);
+        }
+
+        // 🚨 关键修复：只要当前层解析出了下一级的 m3u8 链接，无论 segments 是否为空，都应该具备下钻探测能力！
+        if (nestedM3u8Url) {
+            const nextUrl = nestedM3u8Url.startsWith("http")
+                ? nestedM3u8Url
+                : (nestedM3u8Url.startsWith("/") ? new URL(m3u8Url).origin + nestedM3u8Url : baseUrl + nestedM3u8Url);
+
+            // 如果本层没解析出真正的 ts 切片，说明只是个索引外壳，必须强制递归下钻
+            if (segments.length === 0 || m3u8Text.includes("#EXT-X-STREAM-INF")) {
+                return await fetchAndParseSegments(nextUrl.trim(), depth + 1);
+            }
+        }
+
+        return segments;
+    } catch (e) {
+        return [];
+    }
 }
 
 async function start() {
