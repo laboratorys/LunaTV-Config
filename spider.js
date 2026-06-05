@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const https = require("https"); // 💊 弃用原生 fetch，改用历史最稳固的底层 https 模块
 
 const BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -8,7 +9,6 @@ const BROWSER_HEADERS = {
 };
 const AD_SEGMENT_MAX_COUNT = 20;
 
-// 🔒 极度严苛清洗环境变量，滤除一切不可见、非 ASCII 的控制字符 (\r, \n, 零宽空格等)
 function cleanEnvVar(val) {
     if (!val) return "";
     return val.replace(/[^\x20-\x7E]/g, "").trim();
@@ -25,26 +25,71 @@ if (!WORKER_BASE_URL) {
     process.exit(1);
 }
 
+// 🎯 封装原生 HTTPS 客户端，彻底终结 Cloudflare 握手引起的 fetch failed 玄学问题
+function httpRequest(url, options = {}, postData = null) {
+    return new Promise((resolve, reject) => {
+        const parsedUrl = new URL(url);
+        const defaultOptions = {
+            hostname: parsedUrl.hostname,
+            port: parsedUrl.port || 443,
+            path: parsedUrl.pathname + parsedUrl.search,
+            method: options.method || "GET",
+            headers: {
+                ...BROWSER_HEADERS,
+                ...options.headers,
+            },
+            timeout: options.timeout || 8000,
+        };
+
+        if (postData) {
+            defaultOptions.headers["Content-Length"] = Buffer.byteLength(postData);
+        }
+
+        const req = https.request(defaultOptions, (res) => {
+            let data = [];
+            res.on("data", (chunk) => data.push(chunk));
+            res.on("end", () => {
+                const buffer = Buffer.concat(data);
+                resolve({
+                    ok: res.statusCode >= 200 && res.statusCode < 300,
+                    status: res.statusCode,
+                    headers: res.headers,
+                    text: () => Promise.resolve(buffer.toString("utf-8")),
+                    json: () => Promise.resolve(JSON.parse(buffer.toString("utf-8"))),
+                    arrayBuffer: () => Promise.resolve(buffer),
+                });
+            });
+        });
+
+        req.on("error", (err) => reject(err));
+        req.on("timeout", () => {
+            req.destroy();
+            reject(new Error("Timeout"));
+        });
+
+        if (postData) {
+            req.write(postData);
+        }
+        req.end();
+    });
+}
+
 async function calculateFastMd5(tsUrl) {
     try {
-        const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), 4000);
-        const response = await fetch(tsUrl, { headers: { ...BROWSER_HEADERS, Range: "bytes=0-20480" }, signal: controller.signal });
-        clearTimeout(id);
-        if (!response.ok && response.status !== 206) return null;
-        const buffer = await response.arrayBuffer();
-        return buffer.byteLength > 0 ? crypto.createHash("md5").update(Buffer.from(buffer)).digest("hex") : null;
+        // 强制只拉取前 20KB 判定广告
+        const res = await httpRequest(tsUrl, {
+            headers: { Range: "bytes=0-20480" },
+            timeout: 4000
+        });
+        if (!res.ok && res.status !== 206) return null;
+        const buffer = await res.arrayBuffer();
+        return buffer.byteLength > 0 ? crypto.createHash("md5").update(buffer).digest("hex") : null;
     } catch {
         try {
-            const controller = new AbortController();
-            const id = setTimeout(() => controller.abort(), 3000);
-            const response = await fetch(tsUrl, { headers: BROWSER_HEADERS, signal: controller.signal });
-            clearTimeout(id);
-            if (!response.ok) return null;
-            const reader = response.body.getReader();
-            const { value } = await reader.read();
-            reader.cancel();
-            return value ? crypto.createHash("md5").update(Buffer.from(value.buffer)).digest("hex") : null;
+            const res = await httpRequest(tsUrl, { timeout: 4000 });
+            if (!res.ok) return null;
+            const buffer = await res.arrayBuffer();
+            return buffer.byteLength > 0 ? crypto.createHash("md5").update(buffer).digest("hex") : null;
         } catch {
             return null;
         }
@@ -54,7 +99,7 @@ async function calculateFastMd5(tsUrl) {
 async function fetchAndParseSegments(m3u8Url, depth = 0) {
     if (depth > 3) return [];
     try {
-        const response = await fetch(m3u8Url, { headers: BROWSER_HEADERS });
+        const response = await httpRequest(m3u8Url, { timeout: 6000 });
         if (!response.ok) return [];
         const m3u8Text = await response.text();
         const lines = m3u8Text.split("\n");
@@ -113,24 +158,12 @@ async function start() {
         console.log(`\n==================================================`);
         console.log(`[扫描目标] 采集站: ${sourceName} (${sourceKey})`);
 
-        // 💡 针对 CF 调整的原生兼容请求参数
+        // 💡 采用万无一失的底层 https 模块预载
         const preloadUrl = `${WORKER_BASE_URL}/api/source-md5?source_key=${sourceKey}`;
 
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 6000);
-
-                const res = await fetch(preloadUrl, {
-                    signal: controller.signal,
-                    method: "GET",
-                    headers: {
-                        ...BROWSER_HEADERS, // 注入完整的真实浏览器头，防止 CF 阻断
-                        "Connection": "close" // 显式请求短连接，避开 undici 的 http2/keep-alive 策略死锁
-                    },
-                    keepalive: false // 禁用原生复用连接逻辑
-                });
-                clearTimeout(timeoutId);
+                const res = await httpRequest(preloadUrl, { method: "GET", timeout: 6000 });
 
                 if (res.ok) {
                     const json = await res.json();
@@ -144,15 +177,15 @@ async function start() {
                 }
             } catch (e) {
                 if (attempt === 3) {
-                    console.warn(`  ⚠️ 预载历史规则连续 3 次失败 (底层原因: ${e.message})。`);
+                    console.warn(`  ⚠️ 预载历史规则连续 3 次失败 (底层底层原因: ${e.message})。`);
                     console.warn(`  💡 [架构鲁棒降级]：已安全切换至全纯净本地内存大碰撞模式，不影响本次新广告提取！`);
                 }
             }
         }
 
         try {
-            const targetUrl = `${baseApiUrl}?ac=detail&pg=1&pagesize=5`;
-            const apiResponse = await fetch(targetUrl, { headers: BROWSER_HEADERS });
+            const targetUrl = `${baseApiUrl}?ac=detail&pg=1`;
+            const apiResponse = await httpRequest(targetUrl, { timeout: 8000 });
             if (!apiResponse.ok) continue;
 
             const apiData = await apiResponse.json();
@@ -160,7 +193,7 @@ async function start() {
 
             const adSegmentsToSubmit = [];
 
-            for (const vod of apiData.list.slice(0, 5)) {
+            for (const vod of apiData.list.slice(0, 10)) {
                 const vodId = String(vod.vod_id).trim().replace(/\.0$/, "");
                 const playUrlStr = vod.vod_play_url;
                 if (!playUrlStr || !vodId) continue;
@@ -231,29 +264,28 @@ async function start() {
                 }
             }
 
-            // 💡 针对 CF 调整的原生上传参数
+            // 💡 采用万无一失的底层 https 模块上传
             if (adSegmentsToSubmit.length > 0) {
                 console.log(`  🚀 [同步上传] 推送 ${adSegmentsToSubmit.length} 条真实广告特征至 D1...`);
                 try {
                     const headers = {
-                        ...BROWSER_HEADERS,
-                        "Content-Type": "application/json",
-                        "Connection": "close"
+                        "Content-Type": "application/json"
                     };
                     if (SPIDER_SECRET) {
                         headers["Authorization"] = `Bearer ${SPIDER_SECRET}`;
                     }
 
-                    const uploadRes = await fetch(`${WORKER_BASE_URL}/api/submit-ad-segments`, {
+                    const bodyData = JSON.stringify({
+                        source_key: sourceKey,
+                        source_name: sourceName,
+                        ad_segments: adSegmentsToSubmit
+                    });
+
+                    const uploadRes = await httpRequest(`${WORKER_BASE_URL}/api/submit-ad-segments`, {
                         method: "POST",
                         headers: headers,
-                        body: JSON.stringify({
-                            source_key: sourceKey,
-                            source_name: sourceName,
-                            ad_segments: adSegmentsToSubmit
-                        }),
-                        keepalive: false
-                    });
+                        timeout: 10000
+                    }, bodyData);
 
                     if (uploadRes.ok) {
                         console.log(`  ✅ [同步成功] 存储层同步完毕。`);
