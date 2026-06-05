@@ -97,13 +97,13 @@ async function calculateFastMd5(tsUrl) {
 
 async function fetchAndParseSegments(m3u8Url, depth = 0) {
     if (depth > 4) {
-        return [];
+        return { segments: [], totalTsCount: 0 };
     }
     try {
         const response = await httpRequest(m3u8Url, { timeout: 6000 });
-        if (!response.ok) return [];
+        if (!response.ok) return { segments: [], totalTsCount: 0 };
         let m3u8Text = await response.text();
-        if (!m3u8Text) return [];
+        if (!m3u8Text) return { segments: [], totalTsCount: 0 };
 
         // 🚨 黄金洗涤 1：强制格式化 CRLF 换行符
         m3u8Text = m3u8Text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -148,17 +148,29 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
             segments.push(currentSegment);
         }
 
-        // 🚨 黄金洗涤 3：无视垃圾外壳，侦测嵌套强行无条件深度重定向下钻
+        // 🚨 黄金洗涤 3：检测下钻重定向
         if (nestedM3u8Url && (segments.length === 0 || m3u8Text.includes("#EXT-X-STREAM-INF") || segments[0].length === 0)) {
             let cleanNestedUrl = nestedM3u8Url.trim().replace(/[\x00-\x1F]/g, "");
-            let finalNestedUrl = cleanNestedUrl.startsWith("http") ? cleanNestedUrl : baseUrl + cleanNestedUrl;
+
+            // 防御非标准相对路径拼出的双斜杠 (比如豆瓣资源 /20260602//20260602...)
+            let finalNestedUrl = "";
+            if (cleanNestedUrl.startsWith("http")) {
+                finalNestedUrl = cleanNestedUrl;
+            } else if (cleanNestedUrl.startsWith("/")) {
+                // 如果是绝对根路径，或者防止 baseUrl 本身带斜尾巴
+                const origin = new URL(m3u8Url).origin;
+                finalNestedUrl = origin + "/" + cleanNestedUrl.replace(/^\/+/, "");
+            } else {
+                finalNestedUrl = baseUrl + cleanNestedUrl;
+            }
+
             console.log(`      ➔ [M3U8 重定向] 下钻至: ${finalNestedUrl}`);
             return await fetchAndParseSegments(finalNestedUrl, depth + 1);
         }
 
-        // 为结果附加一个总切片数，方便高颜值日志直接提取打印
         return { segments, totalTsCount };
     } catch (e) {
+        // 🚨 核心修复：捕获块出口必须完全契合解构预期，杜绝 undefined.length 灾难
         return { segments: [], totalTsCount: 0 };
     }
 }
@@ -248,7 +260,7 @@ async function start() {
                 console.log(`       🔗 探测到真实 M3U8: ${m3u8Url.trim()}`);
 
                 const { segments, totalTsCount } = await fetchAndParseSegments(m3u8Url.trim());
-                if (segments.length === 0) {
+                if (!segments || segments.length === 0) {
                     continue;
                 }
 
