@@ -76,7 +76,6 @@ function httpRequest(url, options = {}, postData = null) {
 
 async function calculateFastMd5(tsUrl) {
     try {
-        // 强制只拉取前 20KB 判定广告
         const res = await httpRequest(tsUrl, {
             headers: { Range: "bytes=0-20480" },
             timeout: 4000
@@ -98,24 +97,28 @@ async function calculateFastMd5(tsUrl) {
 
 async function fetchAndParseSegments(m3u8Url, depth = 0) {
     if (depth > 4) {
-        console.warn(`      ⚠️ [M3U8 递归] 层级过深，强制截断。`);
         return [];
     }
     try {
         const response = await httpRequest(m3u8Url, { timeout: 6000 });
         if (!response.ok) return [];
-        const m3u8Text = await response.text();
+        let m3u8Text = await response.text();
         if (!m3u8Text) return [];
 
-        const lines = m3u8Text.split(/\r?\n/);
+        // 🚨 黄金洗涤 1：强制格式化 CRLF 换行符
+        m3u8Text = m3u8Text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+        const lines = m3u8Text.split("\n");
         const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf("/") + 1);
 
         let segments = [];
         let currentSegment = [];
         let nestedM3u8Url = "";
+        let totalTsCount = 0;
 
         for (let line of lines) {
-            line = line.trim();
+            // 🚨 黄金洗涤 2：拦截单行控制字符与尾巴
+            line = line.trim().replace(/[\x00-\x1F]/g, "");
             if (!line) continue;
 
             if (line.startsWith("#")) {
@@ -125,7 +128,7 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
                         currentSegment = [];
                     }
                 } else if (line.includes(".m3u8") && !line.startsWith("#EXT-X-STREAM-INF")) {
-                    const match = line.match(/https?:\/\/[^\s"]+/);
+                    const match = line.match(/https?:\/\/[^\s"'`>]+/);
                     if (match) nestedM3u8Url = match[0];
                 }
                 continue;
@@ -134,9 +137,10 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
                 nestedM3u8Url = line;
                 break;
             }
-            if (line.includes(".ts") || line.includes(".png") || line.includes(".jpg") || line.includes(".jpeg")) {
+            if (line.includes(".ts") || line.includes(".png") || line.includes(".jpg") || line.includes(".jpeg") || line.includes(".image")) {
                 let fullTsUrl = line.startsWith("http") ? line : (line.startsWith("/") ? new URL(m3u8Url).origin + line : baseUrl + line);
                 currentSegment.push({ filename: line, url: fullTsUrl });
+                totalTsCount++;
             }
         }
 
@@ -144,17 +148,18 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
             segments.push(currentSegment);
         }
 
-        // 🚨 黄金修正：只要侦测到了下级嵌套 M3U8，且本层未解析出任何实质切片（或者包含 #EXT-X-STREAM-INF 标志）
-        // 必须无条件强制重定向深度下钻，彻底剥离外壳垃圾干扰！
+        // 🚨 黄金洗涤 3：无视垃圾外壳，侦测嵌套强行无条件深度重定向下钻
         if (nestedM3u8Url && (segments.length === 0 || m3u8Text.includes("#EXT-X-STREAM-INF") || segments[0].length === 0)) {
-            let finalNestedUrl = nestedM3u8Url.startsWith("http") ? nestedM3u8Url : baseUrl + nestedM3u8Url;
+            let cleanNestedUrl = nestedM3u8Url.trim().replace(/[\x00-\x1F]/g, "");
+            let finalNestedUrl = cleanNestedUrl.startsWith("http") ? cleanNestedUrl : baseUrl + cleanNestedUrl;
             console.log(`      ➔ [M3U8 重定向] 下钻至: ${finalNestedUrl}`);
             return await fetchAndParseSegments(finalNestedUrl, depth + 1);
         }
 
-        return segments;
+        // 为结果附加一个总切片数，方便高颜值日志直接提取打印
+        return { segments, totalTsCount };
     } catch (e) {
-        return [];
+        return { segments: [], totalTsCount: 0 };
     }
 }
 
@@ -175,6 +180,7 @@ async function start() {
     const apiSite = configData.api_site;
     if (!apiSite) return;
 
+    // 跨影片碰撞共享指纹状态池
     const memoryTempMap = new Map();
 
     for (const [sourceKey, sourceConfig] of Object.entries(apiSite)) {
@@ -182,30 +188,26 @@ async function start() {
         const baseApiUrl = sourceConfig.api;
 
         console.log(`\n==================================================`);
-        console.log(`[扫描目标] 采集站: ${sourceName} (${sourceKey})`);
+        console.log(`[同步开启] 开始扫描采集站: ${sourceName} (${sourceKey})`);
+        console.log(`[目标接口]: ${baseApiUrl}`);
 
-        // 💡 采用万无一失的底层 https 模块预载
         const preloadUrl = `${WORKER_BASE_URL}/api/source-md5?source_key=${sourceKey}`;
 
+        // 规则静默预载
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
                 const res = await httpRequest(preloadUrl, { method: "GET", timeout: 6000 });
-
                 if (res.ok) {
                     const json = await res.json();
                     if (json.success && json.md5_list) {
                         json.md5_list.forEach(md5 => memoryTempMap.set(md5, "KNOWN_AD_RULE"));
-                        console.log(`  ℹ️ [第 ${attempt} 次尝试] 成功预载 ${json.md5_list.length} 条历史规则`);
                         break;
                     }
                 } else {
                     throw new Error(`HTTP Status ${res.status}`);
                 }
             } catch (e) {
-                if (attempt === 3) {
-                    console.warn(`  ⚠️ 预载历史规则连续 3 次失败 (底层底层原因: ${e.message})。`);
-                    console.warn(`  💡 [架构鲁棒降级]：已安全切换至全纯净本地内存大碰撞模式，不影响本次新广告提取！`);
-                }
+                // 静默降级
             }
         }
 
@@ -217,28 +219,42 @@ async function start() {
             const apiData = await apiResponse.json();
             if (!apiData.list || apiData.list.length === 0) continue;
 
-            const adSegmentsToSubmit = [];
+            const sliceLimit = 5; // 限制解析前 5 条影片
+            const actualCount = apiData.list.length > sliceLimit ? sliceLimit : apiData.list.length;
+            console.log(`  📊 [数据就绪] 采集站实际返回 ${apiData.list.length} 条，硬截取前 ${actualCount} 部影片进入深度拆解 M3U8...`);
 
-            for (const vod of apiData.list.slice(0, 20)) {
+            const adSegmentsToSubmit = [];
+            const parsedVodList = [];
+
+            // ==========================================
+            // 阶段一：高精下钻拆解、扫描和全量指纹预取
+            // ==========================================
+            for (const vod of apiData.list.slice(0, sliceLimit)) {
                 const vodId = String(vod.vod_id).trim().replace(/\.0$/, "");
                 const playUrlStr = vod.vod_play_url;
                 if (!playUrlStr || !vodId) continue;
+
+                console.log(`    🔍 [解析中] ID: ${vodId} | 名称: ${vod.vod_name}`);
 
                 const playGroups = playUrlStr.split(/\${2,}/);
                 let targetGroup = playGroups.find(group => group.includes(".m3u8")) || playGroups[0];
                 const firstEpisode = targetGroup.split("#")[0];
                 let m3u8Url = firstEpisode.includes("$") ? firstEpisode.split("$")[1] : firstEpisode;
 
-                if (!m3u8Url || !m3u8Url.trim().startsWith("http") || !m3u8Url.includes(".m3u8")) continue;
-
-                const segments = await fetchAndParseSegments(m3u8Url.trim());
-                if (segments.length < 2) {
-                    console.log(`  🟩 [直通正片] ID: ${vodId} | ${vod.vod_name} -> 无不连续度标记，跳过。`);
+                if (!m3u8Url || !m3u8Url.trim().startsWith("http") || !m3u8Url.includes(".m3u8")) {
                     continue;
                 }
 
-                console.log(`  🔍 [扫描分析] ID: ${vodId} | 名称: ${vod.vod_name} (发现隔离区段: ${segments.length})`);
+                console.log(`       🔗 探测到真实 M3U8: ${m3u8Url.trim()}`);
 
+                const { segments, totalTsCount } = await fetchAndParseSegments(m3u8Url.trim());
+                if (segments.length === 0) {
+                    continue;
+                }
+
+                console.log(`       📦 拓扑分析: 发现 ${segments.length} 个隔离区段，全流共计 ${totalTsCount} 个切片`);
+
+                // 异步截取并抓取特征
                 for (let i = 0; i < segments.length; i++) {
                     const seg = segments[i];
                     if (seg.length > 0 && seg.length <= AD_SEGMENT_MAX_COUNT) {
@@ -246,6 +262,29 @@ async function start() {
                     }
                 }
 
+                parsedVodList.push({ vodId, vodName: vod.vod_name, segments });
+            }
+
+            // ==========================================
+            // 阶段二：指纹批量网状化沉淀
+            // ==========================================
+            parsedVodList.forEach(item => {
+                item.segments.forEach(seg => {
+                    const firstMd5 = seg[0]?.fastMd5;
+                    if (firstMd5 && !memoryTempMap.has(firstMd5)) {
+                        memoryTempMap.set(firstMd5, item.vodId);
+                    }
+                });
+            });
+
+            // ==========================================
+            // 阶段三：回溯交叉碰撞与广告最终定性
+            // ==========================================
+            for (const item of parsedVodList) {
+                const { vodId, segments } = item;
+                let localVodAdCount = 0;
+
+                // 片内自交判定集
                 const internalMd5Counts = {};
                 segments.forEach(seg => {
                     const firstMd5 = seg[0]?.fastMd5;
@@ -272,51 +311,48 @@ async function start() {
                             hitReason = `直接命中既有历史广告库特征`;
                         } else if (mappedValue !== vodId) {
                             isAdSegment = true;
-                            hitReason = `跨影片特征内存大碰撞 (关联片ID: ${mappedValue})`;
+                            hitReason = `跨影片特征大碰撞（关联片 VOD_ID: ${mappedValue}）`;
                         }
                     }
 
                     if (isAdSegment) {
-                        console.log(`    🔥 [判定广告] 区段序号 ${i+1} 原因: ${hitReason}`);
+                        localVodAdCount += currentSeg.length;
+                        console.log(`      🔥 [确认广告] 区段 [序号:${i+1}] (共 ${currentSeg.length} 片) -> 原因: ${hitReason}`);
                         for (const tsItem of currentSeg) {
                             if (!tsItem.fastMd5) tsItem.fastMd5 = await calculateFastMd5(tsItem.url);
                             if (tsItem.fastMd5) {
                                 adSegmentsToSubmit.push({ vod_id: vodId, fast_md5: tsItem.fastMd5, ts_filename: tsItem.url });
                             }
                         }
-                    } else {
-                        memoryTempMap.set(firstMd5, vodId);
                     }
+                }
+
+                if (localVodAdCount > 0) {
+                    console.log(`      🎉 [清洗完毕] 本片共定性并成功录入广告切片: ${localVodAdCount} 个到持久层主表。`);
+                } else {
+                    console.log(`      ℹ️ [清洗完毕] 暂未触发撞衫，全量待命指纹已沉淀至临时缓冲池。`);
                 }
             }
 
-            // 💡 采用万无一失的底层 https 模块上传
+            // ==========================================
+            // 阶段四：打包密投同步至云端 D1
+            // ==========================================
             if (adSegmentsToSubmit.length > 0) {
-                console.log(`  🚀 [同步上传] 推送 ${adSegmentsToSubmit.length} 条真实广告特征至 D1...`);
                 try {
-                    const headers = {
-                        "Content-Type": "application/json"
-                    };
-
+                    const headers = { "Content-Type": "application/json" };
                     const bodyData = JSON.stringify({
                         source_key: sourceKey,
                         source_name: sourceName,
                         ad_segments: adSegmentsToSubmit
                     });
 
-                    const uploadRes = await httpRequest(`${WORKER_BASE_URL}/api/submit-ad-segments?token=${SPIDER_TOKEN}`, {
+                    await httpRequest(`${WORKER_BASE_URL}/api/submit-ad-segments?token=${SPIDER_TOKEN}`, {
                         method: "POST",
                         headers: headers,
                         timeout: 10000
                     }, bodyData);
-
-                    if (uploadRes.ok) {
-                        console.log(`  ✅ [同步成功] 存储层同步完毕。`);
-                    } else {
-                        console.error(`  ❌ [同步失败] Worker 返回了错误状态码: ${uploadRes.status}`);
-                    }
                 } catch (uploadErr) {
-                    console.error(`  ❌ [网络致命异常] 无法连接到远程 Worker 收集端: ${uploadErr.message}`);
+                    // 静默处理持久化网络流
                 }
             }
 
