@@ -8,11 +8,15 @@ const BROWSER_HEADERS = {
 };
 const AD_SEGMENT_MAX_COUNT = 20;
 
-const WORKER_BASE_URL = process.env.WORKER_BASE_URL;
-const SPIDER_TOKEN = process.env.SPIDER_TOKEN || "";
+// 格式化基础 URL，确保末尾没有多余的斜杠
+let WORKER_BASE_URL = process.env.WORKER_BASE_URL ? process.env.WORKER_BASE_URL.trim() : "";
+if (WORKER_BASE_URL.endsWith("/")) {
+    WORKER_BASE_URL = WORKER_BASE_URL.slice(0, -1);
+}
+const SPIDER_SECRET = process.env.SPIDER_SECRET || "";
 
 if (!WORKER_BASE_URL) {
-    console.error("Missing WORKER_BASE_URL environment variable.");
+    console.error("❌ 错误: 缺失 WORKER_BASE_URL 环境变量。请在 GitHub Secrets 中配置。");
     process.exit(1);
 }
 
@@ -81,7 +85,6 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
 async function start() {
     console.log("🚀 GitHub Actions 纯内存状态机爬虫启动...");
 
-    // 📂 🎯 核心修改：直接从同级目录读取 tv-demo.json 配置文件
     let configData;
     try {
         const configPath = path.join(__dirname, "tv-demo.json");
@@ -99,7 +102,6 @@ async function start() {
         return;
     }
 
-    // 🧠 创建一个全局的内存状态机 Map: key 是 md5, value 是 vod_id
     const memoryTempMap = new Map();
 
     for (const [sourceKey, sourceConfig] of Object.entries(apiSite)) {
@@ -109,22 +111,37 @@ async function start() {
         console.log(`\n==================================================`);
         console.log(`[扫描目标] 采集站: ${sourceName} (${sourceKey})`);
 
-        // 💡 妙招：虽然不用临时表，但我们可以把 D1 里【已经确定是广告的规则】拉下来放进内存
-        try {
-            const res = await fetch(`${WORKER_BASE_URL}/api/source-md5?source_key=${sourceKey}`);
-            if (res.ok) {
-                const json = await res.json();
-                if (json.success && json.md5_list) {
-                    json.md5_list.forEach(md5 => memoryTempMap.set(md5, "KNOWN_AD_RULE"));
-                    console.log(`  ℹ️ 已成功预载 ${json.md5_list.length} 条既有广告规则到内存比对库`);
+        // 💡 加固：带有重试及超时的预载机制
+        const preloadUrl = `${WORKER_BASE_URL}/api/source-md5?source_key=${sourceKey}`;
+        let preloadSuccess = false;
+
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 6000); // 6秒超时强切
+
+                const res = await fetch(preloadUrl, { signal: controller.signal });
+                clearTimeout(timeoutId);
+
+                if (res.ok) {
+                    const json = await res.json();
+                    if (json.success && json.md5_list) {
+                        json.md5_list.forEach(md5 => memoryTempMap.set(md5, "KNOWN_AD_RULE"));
+                        console.log(`  ℹ️ [第 ${attempt} 次尝试] 成功预载 ${json.md5_list.length} 条历史规则`);
+                        preloadSuccess = true;
+                        break;
+                    }
+                }
+            } catch (e) {
+                if (attempt === 3) {
+                    console.warn(`  ⚠️ 预载历史规则连续 3 次失败 (底层原因: ${e.message})。`);
+                    console.warn(`  💡 [架构鲁棒降级]：已安全切换至全纯净本地内存大碰撞模式，不影响本次新广告提取！`);
                 }
             }
-        } catch (e) {
-            console.warn(`  ⚠️ 预载既有规则失败，但不影响本次内存碰撞: ${e.message}`);
         }
 
         try {
-            const targetUrl = `${baseApiUrl}?ac=detail&pg=1&pagesize=5`;
+            const targetUrl = `${baseApiUrl}?ac=detail&pg=1`;
             const apiResponse = await fetch(targetUrl, { headers: BROWSER_HEADERS });
             if (!apiResponse.ok) continue;
 
@@ -133,7 +150,7 @@ async function start() {
 
             const adSegmentsToSubmit = [];
 
-            for (const vod of apiData.list.slice(0, 5)) {
+            for (const vod of apiData.list.slice(0, 10)) {
                 const vodId = String(vod.vod_id).trim().replace(/\.0$/, "");
                 const playUrlStr = vod.vod_play_url;
                 if (!playUrlStr || !vodId) continue;
@@ -153,7 +170,6 @@ async function start() {
 
                 console.log(`  🔍 [扫描分析] ID: ${vodId} | 名称: ${vod.vod_name} (发现隔离区段: ${segments.length})`);
 
-                // 1. 测绘首片指纹
                 for (let i = 0; i < segments.length; i++) {
                     const seg = segments[i];
                     if (seg.length > 0 && seg.length <= AD_SEGMENT_MAX_COUNT) {
@@ -161,14 +177,12 @@ async function start() {
                     }
                 }
 
-                // 2. 片内不连续段相互交尾统计
                 const internalMd5Counts = {};
                 segments.forEach(seg => {
                     const firstMd5 = seg[0]?.fastMd5;
                     if (firstMd5) internalMd5Counts[firstMd5] = (internalMd5Counts[firstMd5] || 0) + 1;
                 });
 
-                // 3. 多轨碰撞
                 for (let i = 0; i < segments.length; i++) {
                     const currentSeg = segments[i];
                     if (currentSeg.length === 0 || currentSeg.length > AD_SEGMENT_MAX_COUNT) continue;
@@ -202,23 +216,34 @@ async function start() {
                             }
                         }
                     } else {
-                        // 纯粹留在当前 Actions 的全局内存 Map 里，供下一部影片做跨片引信
                         memoryTempMap.set(firstMd5, vodId);
                     }
                 }
             }
 
-            // 提交确定好的广告切片
             if (adSegmentsToSubmit.length > 0) {
                 console.log(`  🚀 [同步上传] 推送 ${adSegmentsToSubmit.length} 条真实广告特征至 D1...`);
-                await fetch(`${WORKER_BASE_URL}/api/submit-ad-segments?token=${SPIDER_TOKEN}`, {
-                    method: "POST",
-                    body: JSON.stringify({
-                        source_key: sourceKey,
-                        source_name: sourceName,
-                        ad_segments: adSegmentsToSubmit
-                    })
-                });
+                try {
+                    const uploadRes = await fetch(`${WORKER_BASE_URL}/api/submit-ad-segments`, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Authorization": `Bearer ${SPIDER_SECRET}`
+                        },
+                        body: JSON.stringify({
+                            source_key: sourceKey,
+                            source_name: sourceName,
+                            ad_segments: adSegmentsToSubmit
+                        })
+                    });
+                    if (uploadRes.ok) {
+                        console.log(`  ✅ [同步成功] 存储层同步完毕。`);
+                    } else {
+                        console.error(`  ❌ [同步失败] Worker 返回了错误状态码: ${uploadRes.status}`);
+                    }
+                } catch (uploadErr) {
+                    console.error(`  ❌ [网络致命异常] 无法连接到远程 Worker 收集端: ${uploadErr.message}`);
+                }
             }
 
         } catch (err) {
