@@ -117,7 +117,7 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
         const response = await httpRequest(m3u8Url, {
             timeout: 6000,
             headers: {
-                ...M3U8_BROWSER_HEADERS,
+                ...BROWSER_HEADERS,
                 Referer: new URL(m3u8Url).origin + "/",  // 关键防盗链头
             }
         });
