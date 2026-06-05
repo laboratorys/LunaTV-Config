@@ -96,10 +96,6 @@ async function calculateFastMd5(tsUrl) {
     }
 }
 
-/**
- * 带有分段感知(Discontinuity)的 M3U8 解析器
- * 修复：正确下钻多码率主清单，兼容相对/绝对路径
- */
 async function fetchAndParseSegments(m3u8Url, depth = 0) {
     if (depth > 3) {
         console.error(`      ⚠️ [M3U8 递归] 层级过深，强制截断。`);
@@ -107,16 +103,23 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
     }
 
     try {
+        console.log(`      📡 [M3U8请求] ${m3u8Url}`);
         const response = await httpRequest(m3u8Url, { timeout: 6000 });
-        if (!response.ok) return [];
+        if (!response.ok) {
+            console.log(`      ❌ [M3U8请求失败] 状态码: ${response.status}`);
+            return [];
+        }
 
         const m3u8Text = await response.text();
+        console.log(`      📝 [M3U8内容前200字] ${m3u8Text.substring(0, 200).replace(/\n/g, '|')}`);
+
         const lines = m3u8Text.split("\n");
         const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf("/") + 1);
 
         let segments = [];
         let currentSegment = [];
         let nestedM3u8Urls = [];
+        let hasStreamInf = false;
 
         for (let line of lines) {
             line = line.trim();
@@ -128,13 +131,16 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
                         segments.push(currentSegment);
                         currentSegment = [];
                     }
+                } else if (line.startsWith("#EXT-X-STREAM-INF")) {
+                    hasStreamInf = true;
                 }
                 continue;
             }
 
-            // 非注释行：可能是嵌套 m3u8 或 ts 切片
+            // 非注释行
+            console.log(`      🔍 [解析行] ${line.substring(0, 80)}`);
+
             if (line.includes(".m3u8")) {
-                // 兼容相对路径和绝对路径
                 let fullUrl;
                 if (line.startsWith("http://") || line.startsWith("https://")) {
                     fullUrl = line;
@@ -144,6 +150,7 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
                     fullUrl = baseUrl + line;
                 }
                 nestedM3u8Urls.push(fullUrl);
+                console.log(`      🎯 [发现嵌套M3U8] ${fullUrl}`);
             } else if (
                 line.includes(".ts") ||
                 line.includes(".png") ||
@@ -164,11 +171,12 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
             segments.push(currentSegment);
         }
 
-        // 下钻逻辑：如果有嵌套 m3u8 且当前没有 ts 切片，说明是多码率主清单
-        if (nestedM3u8Urls.length > 0 && segments.length === 0) {
-            // 优先选包含 index 或 mixed 的（通常是默认/最高质量），否则选第一个
+        console.log(`      📊 [解析结果] 区段数:${segments.length}, 嵌套M3U8数:${nestedM3u8Urls.length}, hasStreamInf:${hasStreamInf}`);
+
+        // 下钻逻辑：有嵌套 m3u8 且当前没有 ts 切片，或者明确是多码率清单
+        if (nestedM3u8Urls.length > 0 && (segments.length === 0 || hasStreamInf)) {
             let targetNestedUrl = nestedM3u8Urls.find(u =>
-                u.includes("index.m3u8") || u.includes("mixed.m3u8")
+                u.includes("mixed.m3u8") || u.includes("index.m3u8")
             ) || nestedM3u8Urls[0];
 
             console.log(`      ➔ [M3U8 重定向] 下钻至: ${targetNestedUrl}`);
