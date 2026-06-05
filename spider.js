@@ -4,18 +4,10 @@ const path = require("path");
 const https = require("https");
 
 const BROWSER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    Accept: "*/*",
-};
-const M3U8_BROWSER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    Accept: "*/*",
+    "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    Accept: "application/json, text/plain, */*",
     "Accept-Language": "zh-CN,zh;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    Connection: "keep-alive",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "cross-site",
 };
 const AD_SEGMENT_MAX_COUNT = 20;
 
@@ -85,6 +77,7 @@ async function calculateFastMd5(tsUrl) {
     try {
         const res = await httpRequest(tsUrl, {
             headers: {
+                ...BROWSER_HEADERS,
                 Range: "bytes=0-20480"  // ~20KB，和 Worker 的 10KB*2 接近
             },
             timeout: 4000
@@ -114,6 +107,9 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
     try {
         console.log(`      📡 [M3U8请求] ${m3u8Url}`);
         const response = await httpRequest(m3u8Url, {
+            headers: {
+                ...BROWSER_HEADERS
+            },
             timeout: 6000,
         });
         if (!response.ok) {
