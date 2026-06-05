@@ -18,7 +18,7 @@ let WORKER_BASE_URL = cleanEnvVar(process.env.WORKER_BASE_URL);
 if (WORKER_BASE_URL.endsWith("/")) {
     WORKER_BASE_URL = WORKER_BASE_URL.slice(0, -1);
 }
-const SPIDER_SECRET = cleanEnvVar(process.env.SPIDER_SECRET);
+const SPIDER_TOKEN = cleanEnvVar(process.env.SPIDER_TOKEN);
 
 if (!WORKER_BASE_URL) {
     console.error("❌ 错误: 缺失 WORKER_BASE_URL 环境变量。");
@@ -137,12 +137,12 @@ async function start() {
 
     let configData;
     try {
-        const configPath = path.join(__dirname, "tv-demo.json");
+        const configPath = path.join(__dirname, "tv-ts-ad-source.json");
         console.log(`📂 正在从本地加载源配置: ${configPath}`);
         const rawConfig = fs.readFileSync(configPath, "utf-8");
         configData = JSON.parse(rawConfig);
     } catch (err) {
-        console.error(`❌ 读取本地 tv-demo.json 失败: ${err.message}`);
+        console.error(`❌ 读取本地 tv-ts-ad-source.json 失败: ${err.message}`);
         process.exit(1);
     }
 
@@ -271,9 +271,6 @@ async function start() {
                     const headers = {
                         "Content-Type": "application/json"
                     };
-                    if (SPIDER_SECRET) {
-                        headers["Authorization"] = `Bearer ${SPIDER_SECRET}`;
-                    }
 
                     const bodyData = JSON.stringify({
                         source_key: sourceKey,
@@ -281,7 +278,7 @@ async function start() {
                         ad_segments: adSegmentsToSubmit
                     });
 
-                    const uploadRes = await httpRequest(`${WORKER_BASE_URL}/api/submit-ad-segments`, {
+                    const uploadRes = await httpRequest(`${WORKER_BASE_URL}/api/submit-ad-segments?token=${SPIDER_TOKEN}`, {
                         method: "POST",
                         headers: headers,
                         timeout: 10000

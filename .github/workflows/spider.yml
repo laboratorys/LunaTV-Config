@@ -3,7 +3,7 @@ name: LunaTV AD Rules Spider
 on:
   schedule:
     # 每天北京时间凌晨 03:00 和 中午 12:00 自动跑一次清洗
-    - cron: '0 19,4 * * *'
+    - cron: '0 * * * *'
   workflow_dispatch: # 支持你在 GitHub 面板上手动点按钮触发测试
 
 jobs:
