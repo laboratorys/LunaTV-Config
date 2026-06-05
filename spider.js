@@ -98,7 +98,7 @@ async function calculateFastMd5(tsUrl) {
 
 /**
  * 带有分段感知(Discontinuity)的 M3U8 解析器
- * 严格对齐 Worker 版本逻辑
+ * 修复：正确下钻多码率主清单，兼容相对/绝对路径
  */
 async function fetchAndParseSegments(m3u8Url, depth = 0) {
     if (depth > 3) {
@@ -116,7 +116,7 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
 
         let segments = [];
         let currentSegment = [];
-        let nestedM3u8Url = "";
+        let nestedM3u8Urls = [];
 
         for (let line of lines) {
             line = line.trim();
@@ -128,22 +128,23 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
                         segments.push(currentSegment);
                         currentSegment = [];
                     }
-                } else if (
-                    line.includes(".m3u8") &&
-                    !line.startsWith("#EXT-X-STREAM-INF")
-                ) {
-                    const match = line.match(/https?:\/\/[^\s"]+/);
-                    if (match) nestedM3u8Url = match[0];
                 }
                 continue;
             }
 
+            // 非注释行：可能是嵌套 m3u8 或 ts 切片
             if (line.includes(".m3u8")) {
-                nestedM3u8Url = line;
-                break;
-            }
-
-            if (
+                // 兼容相对路径和绝对路径
+                let fullUrl;
+                if (line.startsWith("http://") || line.startsWith("https://")) {
+                    fullUrl = line;
+                } else if (line.startsWith("/")) {
+                    fullUrl = new URL(m3u8Url).origin + line;
+                } else {
+                    fullUrl = baseUrl + line;
+                }
+                nestedM3u8Urls.push(fullUrl);
+            } else if (
                 line.includes(".ts") ||
                 line.includes(".png") ||
                 line.includes(".jpg") ||
@@ -163,19 +164,15 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
             segments.push(currentSegment);
         }
 
-        // 下钻多码率
-        if (nestedM3u8Url && segments.length === 0) {
-            let finalNestedUrl = nestedM3u8Url;
-            if (
-                !nestedM3u8Url.startsWith("http://") &&
-                !nestedM3u8Url.startsWith("https://")
-            ) {
-                finalNestedUrl = nestedM3u8Url.startsWith("/")
-                    ? new URL(m3u8Url).origin + nestedM3u8Url
-                    : baseUrl + nestedM3u8Url;
-            }
-            console.log(`      ➔ [M3U8 重定向] 下钻至: ${finalNestedUrl}`);
-            return await fetchAndParseSegments(finalNestedUrl, depth + 1);
+        // 下钻逻辑：如果有嵌套 m3u8 且当前没有 ts 切片，说明是多码率主清单
+        if (nestedM3u8Urls.length > 0 && segments.length === 0) {
+            // 优先选包含 index 或 mixed 的（通常是默认/最高质量），否则选第一个
+            let targetNestedUrl = nestedM3u8Urls.find(u =>
+                u.includes("index.m3u8") || u.includes("mixed.m3u8")
+            ) || nestedM3u8Urls[0];
+
+            console.log(`      ➔ [M3U8 重定向] 下钻至: ${targetNestedUrl}`);
+            return await fetchAndParseSegments(targetNestedUrl, depth + 1);
         }
 
         return segments;
