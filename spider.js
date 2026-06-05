@@ -85,7 +85,7 @@ async function calculateFastMd5(tsUrl) {
     try {
         const res = await httpRequest(tsUrl, {
             headers: {
-                ...M3U8_BROWSER_HEADERS,
+                ...BROWSER_HEADERS,
                 Range: "bytes=0-20480"  // ~20KB，和 Worker 的 10KB*2 接近
             },
             timeout: 4000
