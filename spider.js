@@ -5,7 +5,13 @@ const https = require("https");
 
 const BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    Accept: "application/json, text/plain, */*",
+    Accept: "*/*",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    Connection: "keep-alive",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "cross-site",
 };
 const AD_SEGMENT_MAX_COUNT = 20;
 
@@ -104,7 +110,13 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
 
     try {
         console.log(`      📡 [M3U8请求] ${m3u8Url}`);
-        const response = await httpRequest(m3u8Url, { timeout: 6000 });
+        const response = await httpRequest(m3u8Url, {
+            timeout: 6000,
+            headers: {
+                ...BROWSER_HEADERS,
+                Referer: new URL(m3u8Url).origin + "/",  // 关键防盗链头
+            }
+        });
         if (!response.ok) {
             console.log(`      ❌ [M3U8请求失败] 状态码: ${response.status}`);
             return [];
