@@ -8,15 +8,20 @@ const BROWSER_HEADERS = {
 };
 const AD_SEGMENT_MAX_COUNT = 20;
 
-// 格式化基础 URL，确保末尾没有多余的斜杠
-let WORKER_BASE_URL = process.env.WORKER_BASE_URL ? process.env.WORKER_BASE_URL.trim() : "";
+// 🔒 极度严苛清洗环境变量，滤除一切不可见、非 ASCII 的控制字符 (\r, \n, 零宽空格等)
+function cleanEnvVar(val) {
+    if (!val) return "";
+    return val.replace(/[^\x20-\x7E]/g, "").trim();
+}
+
+let WORKER_BASE_URL = cleanEnvVar(process.env.WORKER_BASE_URL);
 if (WORKER_BASE_URL.endsWith("/")) {
     WORKER_BASE_URL = WORKER_BASE_URL.slice(0, -1);
 }
-const SPIDER_SECRET = process.env.SPIDER_SECRET || "";
+const SPIDER_SECRET = cleanEnvVar(process.env.SPIDER_SECRET);
 
 if (!WORKER_BASE_URL) {
-    console.error("❌ 错误: 缺失 WORKER_BASE_URL 环境变量。请在 GitHub Secrets 中配置。");
+    console.error("❌ 错误: 缺失 WORKER_BASE_URL 环境变量。");
     process.exit(1);
 }
 
@@ -97,10 +102,7 @@ async function start() {
     }
 
     const apiSite = configData.api_site;
-    if (!apiSite) {
-        console.error("❌ 配置文件中缺失 'api_site' 节点");
-        return;
-    }
+    if (!apiSite) return;
 
     const memoryTempMap = new Map();
 
@@ -111,16 +113,23 @@ async function start() {
         console.log(`\n==================================================`);
         console.log(`[扫描目标] 采集站: ${sourceName} (${sourceKey})`);
 
-        // 💡 加固：带有重试及超时的预载机制
+        // 💡 针对 CF 调整的原生兼容请求参数
         const preloadUrl = `${WORKER_BASE_URL}/api/source-md5?source_key=${sourceKey}`;
-        let preloadSuccess = false;
 
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 6000); // 6秒超时强切
+                const timeoutId = setTimeout(() => controller.abort(), 6000);
 
-                const res = await fetch(preloadUrl, { signal: controller.signal });
+                const res = await fetch(preloadUrl, {
+                    signal: controller.signal,
+                    method: "GET",
+                    headers: {
+                        ...BROWSER_HEADERS, // 注入完整的真实浏览器头，防止 CF 阻断
+                        "Connection": "close" // 显式请求短连接，避开 undici 的 http2/keep-alive 策略死锁
+                    },
+                    keepalive: false // 禁用原生复用连接逻辑
+                });
                 clearTimeout(timeoutId);
 
                 if (res.ok) {
@@ -128,9 +137,10 @@ async function start() {
                     if (json.success && json.md5_list) {
                         json.md5_list.forEach(md5 => memoryTempMap.set(md5, "KNOWN_AD_RULE"));
                         console.log(`  ℹ️ [第 ${attempt} 次尝试] 成功预载 ${json.md5_list.length} 条历史规则`);
-                        preloadSuccess = true;
                         break;
                     }
+                } else {
+                    throw new Error(`HTTP Status ${res.status}`);
                 }
             } catch (e) {
                 if (attempt === 3) {
@@ -141,7 +151,7 @@ async function start() {
         }
 
         try {
-            const targetUrl = `${baseApiUrl}?ac=detail&pg=1`;
+            const targetUrl = `${baseApiUrl}?ac=detail&pg=1&pagesize=5`;
             const apiResponse = await fetch(targetUrl, { headers: BROWSER_HEADERS });
             if (!apiResponse.ok) continue;
 
@@ -150,7 +160,7 @@ async function start() {
 
             const adSegmentsToSubmit = [];
 
-            for (const vod of apiData.list.slice(0, 10)) {
+            for (const vod of apiData.list.slice(0, 5)) {
                 const vodId = String(vod.vod_id).trim().replace(/\.0$/, "");
                 const playUrlStr = vod.vod_play_url;
                 if (!playUrlStr || !vodId) continue;
@@ -221,21 +231,30 @@ async function start() {
                 }
             }
 
+            // 💡 针对 CF 调整的原生上传参数
             if (adSegmentsToSubmit.length > 0) {
                 console.log(`  🚀 [同步上传] 推送 ${adSegmentsToSubmit.length} 条真实广告特征至 D1...`);
                 try {
+                    const headers = {
+                        ...BROWSER_HEADERS,
+                        "Content-Type": "application/json",
+                        "Connection": "close"
+                    };
+                    if (SPIDER_SECRET) {
+                        headers["Authorization"] = `Bearer ${SPIDER_SECRET}`;
+                    }
+
                     const uploadRes = await fetch(`${WORKER_BASE_URL}/api/submit-ad-segments`, {
                         method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Authorization": `Bearer ${SPIDER_SECRET}`
-                        },
+                        headers: headers,
                         body: JSON.stringify({
                             source_key: sourceKey,
                             source_name: sourceName,
                             ad_segments: adSegmentsToSubmit
-                        })
+                        }),
+                        keepalive: false
                     });
+
                     if (uploadRes.ok) {
                         console.log(`  ✅ [同步成功] 存储层同步完毕。`);
                     } else {
