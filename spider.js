@@ -154,7 +154,7 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
             }
 
             // 非注释行
-            console.log(`      🔍 [解析行] ${line.substring(0, 80)}`);
+           // console.log(`      🔍 [解析行] ${line.substring(0, 80)}`);
 
             if (line.includes(".m3u8")) {
                 let fullUrl;
