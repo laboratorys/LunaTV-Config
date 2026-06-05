@@ -127,7 +127,7 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
         }
 
         const m3u8Text = await response.text();
-        console.log(`      📝 [M3U8内容前200字] ${m3u8Text.substring(0, 200).replace(/\n/g, '|')}`);
+        //console.log(`      📝 [M3U8内容前200字] ${m3u8Text.substring(0, 200).replace(/\n/g, '|')}`);
 
         const lines = m3u8Text.split("\n");
         const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf("/") + 1);
