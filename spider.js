@@ -231,7 +231,7 @@ async function start() {
             const apiData = await apiResponse.json();
             if (!apiData.list || apiData.list.length === 0) continue;
 
-            const sliceLimit = 5; // 硬截取前 5 条影片进行深度探测
+            const sliceLimit = 20; // 硬截取前 5 条影片进行深度探测
             const actualCount = apiData.list.length > sliceLimit ? sliceLimit : apiData.list.length;
             console.log(`  📊 [数据就绪] 采集站实际返回 ${apiData.list.length} 条，硬截取前 ${actualCount} 部影片进入深度拆解 M3U8...`);
 
