@@ -85,7 +85,6 @@ async function calculateFastMd5(tsUrl) {
     try {
         const res = await httpRequest(tsUrl, {
             headers: {
-                ...BROWSER_HEADERS,
                 Range: "bytes=0-20480"  // ~20KB，和 Worker 的 10KB*2 接近
             },
             timeout: 4000
@@ -116,10 +115,6 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
         console.log(`      📡 [M3U8请求] ${m3u8Url}`);
         const response = await httpRequest(m3u8Url, {
             timeout: 6000,
-            headers: {
-                ...BROWSER_HEADERS,
-                Referer: new URL(m3u8Url).origin + "/",  // 关键防盗链头
-            }
         });
         if (!response.ok) {
             console.log(`      ❌ [M3U8请求失败] 状态码: ${response.status}`);
