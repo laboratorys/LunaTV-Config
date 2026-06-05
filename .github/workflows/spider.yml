@@ -26,6 +26,6 @@ jobs:
       - name: Execute Ad Spider Engine
         env:
           # 填入你的 Cloudflare Workers 分配的自定义域名或 .workers.dev 域名
-          WORKER_BASE_URL: ${{ secrets.WORKER_BASE_URL }}+
+          WORKER_BASE_URL: ${{ secrets.WORKER_BASE_URL }}
           SPIDER_SECRET: ${{ secrets.SPIDER_TOKEN }}
         run: node spider.js
