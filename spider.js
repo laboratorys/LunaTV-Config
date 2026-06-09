@@ -123,6 +123,7 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
         console.log(`      📡 [M3U8请求] ${m3u8Url}`);
         // 对 M3U8 请求套用代理
         const wrappedUrl = getWrappedUrl(m3u8Url);
+        console.log(`      📡 [M3U8 Proxy Url] ${wrappedUrl}`);
         const response = await httpRequest(wrappedUrl, {
             headers: { ...BROWSER_HEADERS },
             timeout: 6000,
