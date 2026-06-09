@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
+const http = require("http");
 
 const BROWSER_HEADERS = {
     "User-Agent":
@@ -10,7 +11,7 @@ const BROWSER_HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9",
 };
 const AD_SEGMENT_MAX_COUNT = 20;
-const CONCURRENCY_LIMIT = 3; // 影片解析并发限制，防止并发过高被封
+const CONCURRENCY_LIMIT = 3; // 影片解析并发限制
 
 function cleanEnvVar(val) {
     if (!val) return "";
@@ -23,29 +24,26 @@ if (WORKER_BASE_URL.endsWith("/")) {
 }
 const SPIDER_TOKEN = cleanEnvVar(process.env.SPIDER_TOKEN);
 
-// 从 Actions Secret 读取代理基础 URL
-// 期待格式: https://aaa.com/proxy?url=
-let PROXY_BASE_URL = cleanEnvVar(process.env.PROXY_BASE_URL);
-
 if (!WORKER_BASE_URL) {
     console.error("❌ 错误: 缺失 WORKER_BASE_URL 环境变量。");
 }
 
 /**
- * 包装真实请求 URL，如配置了代理则走代理线
+ * 健壮的高性能原生网络请求，完美支持 301/302 重定向控制
  */
-function getWrappedUrl(targetUrl) {
-    if (!PROXY_BASE_URL) return targetUrl;
-    // 如果代理 URL 已经包含 url=，直接拼接，否则根据情况带上参数
-    return `${WORKER_BASE_URL}/proxy?url=${encodeURIComponent(targetUrl)}`;
-}
-
-function httpRequest(url, options = {}, postData = null) {
+function httpRequest(url, options = {}, postData = null, redirectCount = 0) {
     return new Promise((resolve, reject) => {
+        if (redirectCount > 5) {
+            return reject(new Error("Too many redirects (max 5)"));
+        }
+
         const parsedUrl = new URL(url);
+        // 动态适配 http/https 协议跟随
+        const httpClient = parsedUrl.protocol === "https:" ? https : http;
+
         const defaultOptions = {
             hostname: parsedUrl.hostname,
-            port: parsedUrl.port || 443,
+            port: parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80),
             path: parsedUrl.pathname + parsedUrl.search,
             method: options.method || "GET",
             headers: {
@@ -59,7 +57,24 @@ function httpRequest(url, options = {}, postData = null) {
             defaultOptions.headers["Content-Length"] = Buffer.byteLength(postData);
         }
 
-        const req = https.request(defaultOptions, (res) => {
+        const req = httpClient.request(defaultOptions, (res) => {
+            // ⚡ 拦截并处理 301/302/307/308 重定向
+            if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location) {
+                let redirectUrl = res.headers.location;
+                // 如果是相对路径重定向，自动补全主机头
+                if (!redirectUrl.startsWith("http://") && !redirectUrl.startsWith("https://")) {
+                    redirectUrl = new URL(redirectUrl, url).href;
+                }
+
+                // 递归执行下一次重定向追踪（对 GET 请求保持方法，POST 转化为 GET 避免标准冲突）
+                const nextOptions = { ...options };
+                if (res.statusCode === 301 || res.statusCode === 302) {
+                    nextOptions.method = "GET";
+                }
+
+                return resolve(httpRequest(redirectUrl, nextOptions, nextOptions.method === "GET" ? null : postData, redirectCount + 1));
+            }
+
             let data = [];
             res.on("data", (chunk) => data.push(chunk));
             res.on("end", () => {
@@ -85,30 +100,23 @@ function httpRequest(url, options = {}, postData = null) {
     });
 }
 
-// 低能耗 Range 指纹提取（拦截 403 风险，彻底移除全量 Fallback）
+// 低能耗 Range 指纹提取（原生适配重定向）
 async function calculateFastMd5(tsUrl) {
     try {
-        // 对采集站的 TS 切片请求套用代理
-        const wrappedUrl = getWrappedUrl(tsUrl);
-        const res = await httpRequest(wrappedUrl, {
+        const res = await httpRequest(tsUrl, {
             headers: {
                 ...BROWSER_HEADERS,
-                Range: "bytes=0-20480"  // ~20KB 头部特征提取
+                Range: "bytes=0-20480"  // 只拉取 20KB 头部特征
             },
             timeout: 4000
         });
 
-        // 走代理或者部分采集站可能严格返回 206 Partial Content
-        if (!res.ok && res.status !== 206) {
-            if (res.status === 403) console.error(`      ⚠️ [TS 拦截] 状态码 403，可能代理失效或需要更新特征。`);
-            return null;
-        }
+        if (!res.ok && res.status !== 206) return null;
 
         const buffer = await res.arrayBuffer();
         return buffer.byteLength > 0 ? crypto.createHash("md5").update(buffer).digest("hex") : null;
     } catch (err) {
-        // 安全熔断：彻底放弃全量下载 Fallback，防止网络波动引发死循环、Actions 流量爆表
-        return null;
+        return null; // 熔断机制
     }
 }
 
@@ -119,17 +127,14 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
     }
 
     try {
-        console.log(`      📡 [M3U8请求] ${m3u8Url}`);
-        // 对 M3U8 请求套用代理
-        const wrappedUrl = getWrappedUrl(m3u8Url);
-        console.log(wrappedUrl)
-        const response = await httpRequest(wrappedUrl, {
+        console.log(`      📡 [M3U8 直连请求] ${m3u8Url}`);
+        const response = await httpRequest(m3u8Url, {
             headers: { ...BROWSER_HEADERS },
             timeout: 6000,
         });
 
         if (!response.ok) {
-            console.log(`      ❌ [M3U8请求失败] 状态码: ${response.status}`);
+            console.log(`      ❌ [M3U8 请求失败] 状态码: ${response.status}`);
             return [];
         }
 
@@ -207,7 +212,6 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
     }
 }
 
-// 独立封装单个 VOD 处理逻辑
 async function processSingleVod(vod, sourceCacheMap, adSegmentsToSubmit) {
     const vodId = String(vod.vod_id).trim().replace(/\.0$/, "");
     const playUrlStr = vod.vod_play_url;
@@ -237,7 +241,6 @@ async function processSingleVod(vod, sourceCacheMap, adSegmentsToSubmit) {
     const totalTsCount = segments.reduce((sum, seg) => sum + seg.length, 0);
     console.log(`      📦 拓扑分析: 发现 ${segments.length} 个隔离区段，全流共计 ${totalTsCount} 个切片`);
 
-    // ⚡ 第一阶段：提取高疑短区段首片 Fast-MD5 指纹
     for (let i = 0; i < segments.length; i++) {
         const seg = segments[i];
         if (seg.length > 0 && seg.length <= AD_SEGMENT_MAX_COUNT) {
@@ -255,7 +258,6 @@ async function processSingleVod(vod, sourceCacheMap, adSegmentsToSubmit) {
 
     let localVodAdCount = 0;
 
-    // ⚡ 第二阶段：双轨判定漏斗
     for (let i = 0; i < segments.length; i++) {
         const currentSeg = segments[i];
         if (currentSeg.length === 0 || currentSeg.length > AD_SEGMENT_MAX_COUNT) continue;
@@ -278,6 +280,9 @@ async function processSingleVod(vod, sourceCacheMap, adSegmentsToSubmit) {
                 isAdSegment = true;
                 hitReason = `跨影片特征大碰撞（关联片 VOD_ID: ${mappedValue}）`;
             }
+        } else if (i === 0 && currentSeg.length <= 5) {
+            isAdSegment = true;
+            hitReason = `头部绝对区段特征主动嗅探机制定性 (切片数: ${currentSeg.length})`;
         }
 
         if (isAdSegment) {
@@ -309,12 +314,7 @@ async function processSingleVod(vod, sourceCacheMap, adSegmentsToSubmit) {
 }
 
 async function start() {
-    console.log("🚀 GitHub Actions 纯内存状态机爬虫启动...");
-    if (PROXY_BASE_URL) {
-        console.log(`🔒 已检测到代理配置，采集站流量将通过中转层进行代理。`);
-    } else {
-        console.log(`⚠️ 未检测到代理配置，将尝试直连请求。`);
-    }
+    console.log("🚀 VPS 直连重定向自适应版状态机爬虫启动...");
 
     let configData;
     try {
@@ -341,7 +341,6 @@ async function start() {
 
         const sourceCacheMap = new Map();
 
-        // 预载云端既有规则（此请求不走代理，直接请求你自己的 Worker 避免浪费代理流量）
         try {
             const preloadUrl = `${WORKER_BASE_URL}/api/source-md5?source_key=${sourceKey}`;
             const res = await httpRequest(preloadUrl, { method: "GET", timeout: 6000 });
@@ -356,9 +355,7 @@ async function start() {
 
         try {
             const targetUrl = `${baseApiUrl}?ac=detail&pg=1`;
-            // 获取采集源列表的请求同样套用代理
-            const wrappedTargetUrl = getWrappedUrl(targetUrl);
-            const apiResponse = await httpRequest(wrappedTargetUrl, { timeout: 8000 });
+            const apiResponse = await httpRequest(targetUrl, { timeout: 8000 });
 
             if (!apiResponse.ok) {
                 console.error(`  ⚠️ [请求异常] 状态码: ${apiResponse.status}，跳过该源。`);
@@ -389,7 +386,6 @@ async function start() {
 
             const adSegmentsToSubmit = [];
 
-            // 💡 优化：控制并发度限制的微型执行池，防止一次性请求太多导致 WAF 针对代理 IP
             const pool = [];
             for (const vod of finalTaskList) {
                 const promise = processSingleVod(vod, sourceCacheMap, adSegmentsToSubmit)
@@ -399,9 +395,8 @@ async function start() {
                     await Promise.race(pool);
                 }
             }
-            await Promise.all(pool); // 等待最后一批剩余的任务完成
+            await Promise.all(pool);
 
-            // 打包密投同步至云端 D1 存储层
             if (adSegmentsToSubmit.length > 0) {
                 console.log(`  🚀 [同步上传] 正在推送本轮扫描到的 ${adSegmentsToSubmit.length} 条真实广告特征至 D1 库...`);
                 try {
