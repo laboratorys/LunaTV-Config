@@ -37,8 +37,7 @@ if (!WORKER_BASE_URL) {
 function getWrappedUrl(targetUrl) {
     if (!PROXY_BASE_URL) return targetUrl;
     // 如果代理 URL 已经包含 url=，直接拼接，否则根据情况带上参数
-    const joiner = PROXY_BASE_URL.includes("=") ? "" : (PROXY_BASE_URL.includes("?") ? "&url=" : "?url=");
-    return `${PROXY_BASE_URL}${joiner}${encodeURIComponent(targetUrl)}`;
+    return `${WORKER_BASE_URL}/proxy?url=${encodeURIComponent(targetUrl)}`;
 }
 
 function httpRequest(url, options = {}, postData = null) {
@@ -123,7 +122,6 @@ async function fetchAndParseSegments(m3u8Url, depth = 0) {
         console.log(`      📡 [M3U8请求] ${m3u8Url}`);
         // 对 M3U8 请求套用代理
         const wrappedUrl = getWrappedUrl(m3u8Url);
-        console.log(`      📡 [M3U8 Proxy Url] ${wrappedUrl}`);
         const response = await httpRequest(wrappedUrl, {
             headers: { ...BROWSER_HEADERS },
             timeout: 6000,
