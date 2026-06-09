@@ -384,7 +384,7 @@ async function start() {
                 continue;
             }
 
-            const finalTaskList = apiData.list.slice(0, 20);
+            const finalTaskList = apiData.list.slice(0, 5);
             console.log(`  📊 [数据就绪] 采集站实际返回 ${apiData.list.length} 条，硬截取前 ${finalTaskList.length} 部影片并注入并发队列...`);
 
             const adSegmentsToSubmit = [];
