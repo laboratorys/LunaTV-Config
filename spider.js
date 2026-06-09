@@ -355,7 +355,7 @@ async function start() {
         } catch (e) {}
 
         try {
-            const targetUrl = `${baseApiUrl}?ac=detail&pg=1&pagesize=5`;
+            const targetUrl = `${baseApiUrl}?ac=detail&pg=1`;
             // 获取采集源列表的请求同样套用代理
             const wrappedTargetUrl = getWrappedUrl(targetUrl);
             const apiResponse = await httpRequest(wrappedTargetUrl, { timeout: 8000 });
@@ -384,7 +384,7 @@ async function start() {
                 continue;
             }
 
-            const finalTaskList = apiData.list.slice(0, 5);
+            const finalTaskList = apiData.list.slice(0, 20);
             console.log(`  📊 [数据就绪] 采集站实际返回 ${apiData.list.length} 条，硬截取前 ${finalTaskList.length} 部影片并注入并发队列...`);
 
             const adSegmentsToSubmit = [];
