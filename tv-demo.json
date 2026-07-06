@@ -38,12 +38,11 @@
     "iptv": {
       "name": "iptv",
       "url": "https://cdn.jsdmirror.cn/gh/best-fan/iptv-sources@main/cn_all_status.m3u8",
-      "epg":"https://epg.yang-1989.eu.org/epg.xml.gz"
+      "epg":"http://epg.51zmt.top:8000/api/diyp/?ch={name}&date={date}"
     },
     "世界杯": {
       "name": "世界杯",
-      "url": "http://82.156.243.185:33389/fwc.m3u",
-      "epg":"https://epg.yang-1989.eu.org/epg.xml.gz"
+      "url": "http://82.156.243.185:33389/fwc.m3u"
     }
   },
   "ad_rules": "https://gcore.jsdelivr.net/gh/laboratorys/LunaTV-Config@main/dist/rules.json"
