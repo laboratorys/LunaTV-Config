@@ -10,7 +10,7 @@
       "name": "非凡影视"
     },
     "wujin": {
-      "api": "https://api.wujinapi.me/api.php/provide/vod",
+      "api": "http://api.wujinwszy.net/api.php/provide/vod",
       "name": "无尽资源"
     },
     "ruyi": {
