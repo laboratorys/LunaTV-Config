@@ -9,17 +9,21 @@
       "api": "https://api.ffzyapi.com/api.php/provide/vod",
       "name": "非凡影视"
     },
-    "wujin": {
-      "api": "http://api.wujinwszy.net/api.php/provide/vod",
-      "name": "无尽资源"
-    },
     "ruyi": {
       "api": "https://bycj.rytvapi.com/api.php/provide/vod",
       "name": "如意资源"
     },
-    "dbzy": {
-      "api": "https://dbzy.tv/api.php/provide/vod",
-      "name": "豆瓣资源"
+    "xlzy": {
+      "api": "https://api.xinlangapi.com/xinlangapi.php/provide/vod",
+      "name": "新浪资源"
+    },
+    "mdzy": {
+      "api": "https://www.mdzyapi.com/api.php/provide/vod",
+      "name": "魔都资源"
+    },
+    "gszy": {
+      "api": "https://api.guangsuapi.com/api.php/provide/vod",
+      "name": "光速资源"
     },
     "lzi": {
       "api": "https://cj.lziapi.com/api.php/provide/vod",
