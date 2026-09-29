@@ -46,4 +46,18 @@ jobs:
           curl -i "${BASE_URL}/config.txt"
           echo -e "\n正在刷新 config-demo.txt..."
           curl -i "${BASE_URL}/config-demo.txt"
+      - name: Purge jsdmirror Cache
+        if: steps.commit_step.outputs.changed == 'true'
+        env:
+          JSD_MIRROR_KEY: ${{ secrets.JSD_MIRROR_KEY }}
+        run: |
+          MIRROR_BASE="https://cdn.jsdmirror.com/gh/${{ github.repository }}@main/dist"
+          for file in rules.json config.txt config-demo.txt; do
+            echo "正在刷新 ${file}..."
+            curl -X POST https://cache.jsdmirror.com/api/v1/purge \
+              -H "Content-Type: application/json" \
+              -H "X-API-Key: ${JSD_MIRROR_KEY}" \
+              -d "{\"url\": \"${MIRROR_BASE}/${file}\"}"
+            echo -e "\n"
+          done
 
