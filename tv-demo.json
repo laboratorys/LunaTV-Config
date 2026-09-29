@@ -47,6 +47,22 @@
     "zbds": {
       "name": "国内2",
       "url": "https://live.zbds.top/tv/iptv4.m3u"
+    },
+    "f1": {
+      "name": "F1",
+      "url": "https://kan.waiguotai.top/other.m3u"
+    },
+    "douyuyqk": {
+      "name": "斗鱼一起看",
+      "url": "https://sub.ottiptv.cc/douyuyqk.m3u"
+    },
+    "huyayqk": {
+      "name": "虎牙一起看",
+      "url": "https://sub.ottiptv.cc/huyayqk.m3u"
+    },
+    "yylunbo": {
+      "name": "YY轮播",
+      "url": "https://sub.ottiptv.cc/yylunbo.m3u"
     }
   },
   "ad_rules": "https://gcore.jsdelivr.net/gh/laboratorys/LunaTV-Config@main/dist/rules.json"
