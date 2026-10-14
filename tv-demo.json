@@ -3,15 +3,18 @@
   "api_site": {
     "dyttzy": {
       "api": "http://caiji.dyttzyapi.com/api.php/provide/vod",
-      "name": "电影天堂"
+      "name": "电影天堂",
+      "filterAds": true
     },
     "ffzy": {
       "api": "https://api.ffzyapi.com/api.php/provide/vod",
-      "name": "非凡影视"
+      "name": "非凡影视",
+      "filterAds": true
     },
     "ruyi": {
       "api": "https://bycj.rytvapi.com/api.php/provide/vod",
-      "name": "如意资源"
+      "name": "如意资源",
+      "filterAds": true
     },
     "xlzy": {
       "api": "https://api.xinlangapi.com/xinlangapi.php/provide/vod",
@@ -27,15 +30,18 @@
     },
     "lzi": {
       "api": "https://cj.lziapi.com/api.php/provide/vod",
-      "name": "量子资源"
+      "name": "量子资源",
+      "filterAds": true
     },
     "yzzy": {
       "api": "https://api.yyzy-tv.vip/inc/apijson.php",
-      "name": "优质资源"
+      "name": "优质资源",
+      "filterAds": true
     },
     "myzy": {
       "api": "https://api.maoyanapi.top/api.php/provide/vod",
-      "name": "猫眼资源"
+      "name": "猫眼资源",
+      "filterAds": true
     }
   },
   "lives": {
@@ -64,6 +70,5 @@
       "name": "YY轮播",
       "url": "https://sub.ottiptv.cc/yylunbo.m3u"
     }
-  },
-  "ad_rules": "https://gcore.jsdelivr.net/gh/laboratorys/LunaTV-Config@main/dist/rules.json"
+  }
 }
