@@ -80,5 +80,9 @@
       "name": "YY轮播",
       "url": "https://sub.ottiptv.cc/yylunbo.m3u"
     }
+  },
+  "danmu_api":{
+    "url": "https://dm.vxsx.eu.org",
+    "token":"labddm"
   }
 }
