@@ -63,7 +63,8 @@
     "aptv": {
       "name": "APTV",
       "url": "https://gcore.jsdelivr.net/gh/Kimentanm/aptv@master/m3u/iptv.m3u",
-      "epg":"http://epg.51zmt.top:8000/e.xml.gz"
+      "epg":"http://epg.51zmt.top:8000/e.xml.gz",
+      "ua": "AptvPlayer"
     },
     "zbds": {
       "name": "国内2",
